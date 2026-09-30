@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 
 /// Feature 1 — "Run at Startup".
 ///
@@ -48,10 +49,28 @@ struct StartupManager {
     }
 
     /// Absolute path of the running executable, e.g.
-    /// `/Applications/Rosetta Stone.app/Contents/MacOS/RosettaStone`.
+    /// `/Applications/RosettaStone.app/Contents/MacOS/RosettaStone`.
+    ///
+    /// `executableURL` is optional in principle, but it is never nil for a running
+    /// `.app` — `Info.plist` declares `CFBundleExecutable` and the binary is present.
+    /// The fallback keeps the LaunchAgent writable rather than trapping, because a
+    /// trap here would happen *while enabling Run at Startup*, i.e. exactly when the
+    /// user is least able to recover.
     static var currentExecutablePath: String {
-        Bundle.main.bundlePath + "/Contents/MacOS/" + Bundle.main.executableURL.lastPathComponent
+        let name = Bundle.main.executableURL?.lastPathComponent
+            ?? Bundle.main.object(forInfoDictionaryKey: "CFBundleExecutable") as? String
+            ?? "RosettaStone"
+        return Bundle.main.bundlePath + "/Contents/MacOS/" + name
     }
+
+    /// The real UID of this process, used for the `gui/<uid>` launchctl domain and for
+    /// `chown`ing the installed plist back to the user.
+    ///
+    /// `getuid()` rather than `ProcessInfo.userIdentifier`: the latter does not exist.
+    /// The process is never elevated at this point — elevation happens only inside the
+    /// child `osascript` shell — so `getuid()` is the user's UID, which is what the
+    /// LaunchAgent has to be owned by.
+    static var userID: uid_t { getuid() }
 
     // MARK: - Install / remove (elevated)
 
@@ -77,7 +96,7 @@ struct StartupManager {
                             exitCode: -1)
         }
 
-        let uid = ProcessInfo.processInfo.userIdentifier
+        let uid = StartupManager.userID
         let destination = SystemCommands.shellQuoted(StartupManager.plistURL.path)
         let staged = SystemCommands.shellQuoted(stagingURL.path)
         let directory = SystemCommands.shellQuoted(StartupManager.plistURL.deletingLastPathComponent().path)
@@ -100,7 +119,7 @@ struct StartupManager {
     /// `launchctl unload` fails when the job was never loaded; that is deliberately
     /// swallowed because a successful deletion is what the user asked for.
     func remove() -> CommandOutcome {
-        let uid = ProcessInfo.processInfo.userIdentifier
+        let uid = StartupManager.userID
         let path = SystemCommands.shellQuoted(StartupManager.plistURL.path)
         let script = """
         (/bin/launchctl bootout "gui/\(uid)" \(path) 2>/dev/null || /bin/launchctl unload \(path) 2>/dev/null || true) && \

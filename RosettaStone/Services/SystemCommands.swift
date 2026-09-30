@@ -164,7 +164,12 @@ enum SystemCommands {
     }
 
     private static func shortDescription(of error: Error) -> String {
-        if let commandError = error as? CommandError { return commandError.errorDescription }
+        // `LocalizedError.errorDescription` is `String?`, not `String`. Every
+        // `CommandError` case returns a non-nil string, so the `??` is only a
+        // formality — it keeps the return type non-optional without an `!`.
+        if let commandError = error as? CommandError {
+            return commandError.errorDescription ?? "The command could not be completed."
+        }
         return error.localizedDescription
     }
 }
