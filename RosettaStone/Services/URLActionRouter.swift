@@ -71,7 +71,7 @@ enum URLActionRouter {
                       coordinator: FeatureCoordinator,
                       presenter: URLActionHandling) {
         guard let kind = URLAction.kind(for: url) else {
-            NSLog("[RosettaStone] ignoring unrecognised URL: \(url.absoluteString)")
+            NSLog("[RosettaStone] ignoring unrecognised URL: %@", url.absoluteString)
             return
         }
 

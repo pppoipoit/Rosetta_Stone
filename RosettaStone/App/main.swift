@@ -24,6 +24,11 @@ import AppKit
 /// run with no status item and no URL handling.
 private var retainedDelegate: AppDelegate?
 
+// Traced before anything else. The macOS 26 "process alive but invisible" report is only
+// diagnosable if we know the arguments the process actually started with — in particular
+// whether LaunchAgent passed `--menu-bar-only`.
+Trace.logLaunchContext()
+
 if #available(macOS 11.0, *) {
     RosettaStoneApp.main()
 } else {
@@ -31,6 +36,7 @@ if #available(macOS 11.0, *) {
     let delegate = AppDelegate()
     retainedDelegate = delegate
     application.delegate = delegate
+    Trace.log("bootstrapping via AppKit NSApplication (macOS 10.15 path)")
     // `Info.plist` carries no `NSMainNibFile`, so no nib is loaded — `run()` goes
     // straight to `applicationDidFinishLaunching(_:)`.
     application.run()

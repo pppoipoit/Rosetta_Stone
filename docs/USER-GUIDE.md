@@ -47,6 +47,76 @@ intentional. To open the panel, click the menu-bar glyph.
 
 ---
 
+## 4. First run with Gatekeeper ON
+
+### 4.1 What to expect
+
+Rosetta Stone is signed **ad-hoc**. It has **no Developer ID** and it has **never been notarised**
+by Apple. That is a deliberate choice, and it has one honest consequence:
+
+> **Ad-hoc signing cannot silently bypass Gatekeeper.** macOS will ask you to approve the app
+> the first time you open it. This is expected, it is not a broken download, and it happens
+> **once**.
+
+You need to do **one** of the two things below. Both are permanent for this copy of the app.
+
+### 4.2 Option A — right-click → Open (one click, no Terminal)
+
+1. Open **Applications** in the Finder.
+2. **Right-click** (or Control-click) **Rosetta Stone**.
+3. Choose **Open** in the menu that appears.
+4. A dialog confirms — click **Open** again.
+5. The app opens. This approval is remembered; you will not be asked again.
+
+If **Open** is not offered and the app refuses to start, macOS is still holding the download
+quarantine flag. Use Option B.
+
+### 4.3 Option B — run the first-run script (removes the quarantine flag)
+
+The repository ships `scripts/first-run.sh`. It removes only the quarantine attribute that
+macOS applies to downloaded files — it does **not** disable Gatekeeper and does not weaken
+your Mac in any way.
+
+```bash
+# from a Terminal, in the folder where you unpacked the repository
+bash scripts/first-run.sh
+```
+
+Or with the app in a non-standard location:
+
+```bash
+bash scripts/first-run.sh "/path/to/RosettaStone.app"
+```
+
+What the script does, and what it does not:
+
+| Does | Does not |
+|------|----------|
+| Removes `com.apple.quarantine` recursively from the app bundle | Disable Gatekeeper |
+| Work on either `RosettaStone.app` or `Rosetta Stone.app` | Bypass any other macOS security check |
+| Tell you clearly if the app was not found | Modify the app itself |
+
+The equivalent one-liner, if you would rather not run the script:
+
+```bash
+xattr -dr com.apple.quarantine "/Applications/RosettaStone.app"
+```
+
+### 4.4 Verifying the first run worked
+
+On first launch Rosetta Stone **opens its panel once**. This is intentional: the app has no
+Dock icon, so without it a brand-new installation would look like it had failed to start.
+
+You should see a dark panel with the six feature rows, and a stone glyph in your menu bar.
+
+If you see neither, open **Diagnostics** to find out why:
+
+1. Control-click the menu-bar glyph.
+2. Choose **Diagnostics…**.
+3. Click **Copy Report** and paste it into a bug report.
+
+---
+
 ## 5. The panel
 
 The window is dark-themed and laid out top to bottom as follows.
@@ -63,8 +133,18 @@ The window is dark-themed and laid out top to bottom as follows.
 ### The menu-bar menu
 
 Click the menu-bar glyph to open the panel. Control-clicking the same glyph gives a small menu with
-quick access to the app, its version, and a Quit command. The app has no Dock icon, so this menu
-and the panel are the only ways to reach it once running.
+quick access to the app, its version, **Diagnostics…**, and a Quit command. The app has no Dock
+icon, so this menu and the panel are the only ways to reach it once running.
+
+### Diagnostics
+
+**Diagnostics…** (or press ⌘D with the menu open) shows the state of the running app: CPU
+architecture, macOS version, process ID, activation policy, launch posture, the status item's
+measured width and which icon it resolved, and whether the login item is installed.
+
+Use it whenever something looks wrong — an empty menu-bar slot, a missing icon, or a login item
+that does not fire. Click **Copy Report** and paste the result into a bug report; it replaces a
+round of "did it even start?" questions.
 
 ### The lock icon
 
@@ -85,9 +165,14 @@ chip. The row is kept visible — rather than hidden — so the app looks identi
 **ON** installs a login item at `~/Library/LaunchAgents/com.rosettastone.helper.plist` so the
 menu-bar icon appears automatically every time you log in. **OFF** removes it.
 
+The login item starts the app as a **menu-bar gadget only** — no window opens at login, and there
+is no Dock icon. Click the glyph to open the panel whenever you want it.
+
 - Requires your administrator password.
 - If you move Rosetta Stone to a different folder after turning this on, turn it off and on again
   so the login item is regenerated with the new path.
+- Login items created by an older version did not pass the menu-bar-only flag. Turn the toggle off
+  and on once to regenerate it; **Diagnostics…** reports whether yours is current.
 
 ### 6.2 Gatekeeper
 
@@ -265,7 +350,7 @@ open "rosettastone://flush-dns"
 | Consideration | Detail |
 |---------------|--------|
 | Password prompts | Any action marked *Yes* above still raises the macOS password dialog, even when triggered by an automation. macOS has no way to pre-authorise a GUI script, so your automation will pause until you type your password. |
-| Background execution | An action triggered while the app is closed launches it in the background — **no window appears**. That is intentional. |
+| Background execution | An action triggered while the app is closed launches it in the background — **no window appears**. That is intentional. The action is queued and runs as soon as the app finishes starting, so a cold start works exactly like a warm one. |
 | Silent success | Nothing pops up to tell you it worked. Check the toggle state, or add a `Notify` action in Shortcuts if you want feedback. |
 | Destructive actions | `clear-cache` keeps its confirmation dialog even when driven by a URL. Automating it requires you to click **Confirm** each time. |
 | Duplicating actions | Toggling actions flip state. Do not put `toggle-gatekeeper` in a shortcut that runs repeatedly — use it deliberately. |
@@ -294,9 +379,11 @@ machine.
 
 | Problem | Try this |
 |---------|----------|
-| "Cannot be opened because the developer cannot be verified" | Control-click → **Open** (§4.2), or `xattr -cr` (§4.3) |
-| No menu-bar icon after launch | Check **System Settings → Control Center** — macOS may have hidden it under **Control Center → Other Modules**. Also confirm the app is running: it has no Dock icon to look for. |
-| App does not start at login | Toggle **Run at Startup** off, then on again. Then log out and back in. |
+| "Cannot be opened because the developer cannot be verified" | Control-click → **Open** (§4.2), or run `scripts/first-run.sh` (§4.3) |
+| No menu-bar icon after launch | Open **Diagnostics…** (§5). If the status item reports a width of 0 the icon failed to render; if it reports "missing (never created)" the app did not finish launching. |
+| Nothing at all appears on first launch | The app opens its panel once on first run — that is deliberate (§4.4). If it did not, check **Diagnostics…**. |
+| App does not start at login | Toggle **Run at Startup** off, then on again, then log out and back in. **Diagnostics…** shows whether the login item is installed and whether it is stale. |
+| A Shortcut did nothing | Confirm the app is allowed to run at all (§4). Actions that are already running in the background perform silently — see §9.7. |
 | Password prompt never appears | Check that a previous `osascript` dialog is not hidden behind another window. Only one privileged action runs at a time. |
 | "Operation not permitted" | You cancelled the prompt, or the command needs root and did not get it. Retry and complete the password prompt. |
 | Rosetta 2 install fails | You need an internet connection. On macOS 11.0–11.2 the component is not bundled; update to 11.3+ first. |

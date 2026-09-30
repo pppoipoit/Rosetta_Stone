@@ -422,6 +422,56 @@ None — transient action button with no persistent state.
 
 ---
 
+## 9. URL-scheme actions
+
+Rosetta Stone registers the custom scheme `rosettastone://` via `CFBundleURLTypes`. This is the
+only automation surface, and it is what makes all seven Shortcuts actions work **cold** — with the
+app not running at all.
+
+### Registered actions
+
+These seven are the complete, exhaustive list. There is no eighth, and the set must match
+`README.md` §Shortcuts integration and `docs/USER-GUIDE.md` §9.1 exactly.
+
+| # | Action | Full URL | Maps to | Elevation |
+|---|--------|----------|---------|-----------|
+| 1 | `open-app` | `rosettastone://open-app` | Show + focus the main window | No |
+| 2 | `toggle-gatekeeper` | `rosettastone://toggle-gatekeeper` | Feature 2 | **Yes** (admin) |
+| 3 | `toggle-hidden-files` | `rosettastone://toggle-hidden-files` | Feature 3 | No |
+| 4 | `flush-dns` | `rosettastone://flush-dns` | Feature 7 | **Yes** (admin) |
+| 5 | `rebuild-spotlight` | `rosettastone://rebuild-spotlight` | Feature 6 | **Yes** (admin) |
+| 6 | `clear-cache` | `rosettastone://clear-cache` | Feature 8 — still confirms | **Yes** (admin) |
+| 7 | `install-rosetta` | `rosettastone://install-rosetta` | Feature 5 | **Yes** (admin) |
+
+There is deliberately **no** URL action for `run-at-startup` or `auto-boot`: both change boot and
+login behaviour, and driving them from an untrusted caller with no in-app confirmation would be
+unsafe.
+
+### Parsing rules
+
+- The action is the URL's **host** component: `rosettastone://flush-dns` → `flush-dns`.
+- Matching is **case-insensitive** (`FLUSH-DNS` works) but **never prefix-matched** —
+  `rosettastone://flush-dns-extra` must be rejected as unknown.
+- Query and path components are **ignored**, never honoured (`?force=1` is discarded, so an
+  injected parameter cannot escalate a harmless call into a dangerous one).
+- An unknown or malformed URL is logged and discarded. **No user-facing error.** A shortcut that
+  fires at 3 a.m. must never produce an alert nobody asked for.
+
+### Cold-start guarantee
+
+All seven actions must work when the app is **not running**. Launch Services can deliver
+`application(_:open:)` before `applicationDidFinishLaunching` has finished building the status
+item, so:
+
+1. A URL that arrives early is **queued**, never dropped.
+2. The queue is drained immediately after the status item exists, on the main thread.
+3. The status item is guaranteed to exist **before** any queued action runs.
+
+An action that is unavailable on the current CPU (`install-rosetta` on Intel, for example) is
+silently ignored, exactly as it is from the panel.
+
+---
+
 ## Cross-cutting behaviour
 
 ### Row order (fixed)

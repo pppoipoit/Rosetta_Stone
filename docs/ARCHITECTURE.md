@@ -98,10 +98,21 @@ status-bar items. A daemon would run in a non-GUI context and could not.
 | Key | Value | Reason |
 |-----|-------|--------|
 | `Label` | `com.rosettastone.helper` | Reverse-DNS label; also the `launchctl` job name |
-| `ProgramArguments` | `/Applications/Rosetta Stone.app/Contents/MacOS/RosettaStone` | Absolute path — the agent inherits no usable `PATH` |
+| `ProgramArguments` | `["/Applications/RosettaStone.app/Contents/MacOS/RosettaStone", "--menu-bar-only"]` | Absolute path — the agent inherits no usable `PATH`. The binary is **exec'd directly**, never via `open -a`, which is an indirect launch that can be swallowed by Launch Services and that loses the process arguments |
 | `RunAtLoad` | `true` | Launch as soon as the user logs in |
 | `ProcessType` | `Interactive` | Allows UI / status-bar presentation |
 | `LimitLoadToSessionType` | `Aqua` | Prevents launch in SSH / background sessions |
+
+### The `--menu-bar-only` argument
+
+The launch posture is the app's only interface, so it is passed explicitly rather than inferred.
+`AppDelegate.requestedMenuBarOnly()` reads the flag at startup and the app then **skips window
+creation entirely** — no panel, no first-run window, no sheet. The status item and its dropdown
+are the whole UI.
+
+This is what makes the "Run at Startup" requirement hold literally: with the toggle ON, the app
+lives as a menu-bar gadget only. A plist written by an older build lacks the flag; **Diagnostics…**
+reports that state, and toggling the switch off → on regenerates the plist.
 
 ### Enable sequence
 

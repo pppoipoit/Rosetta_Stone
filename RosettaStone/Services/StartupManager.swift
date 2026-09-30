@@ -14,6 +14,12 @@ struct StartupManager {
     static let label = "com.rosettastone.helper"
     static let fileName = "com.rosettastone.helper.plist"
 
+    /// The argument appended to the LaunchAgent's `ProgramArguments`.
+    ///
+    /// Read back by `AppDelegate.requestedMenuBarOnly()`. Both sides reference this one
+    /// constant, so the flag cannot drift between the writer and the reader.
+    static let menuBarOnlyArgument = "--menu-bar-only"
+
     /// `~/Library/LaunchAgents/com.rosettastone.helper.plist`
     static var plistURL: URL {
         FileManager.default.homeDirectoryForCurrentUser
@@ -39,6 +45,20 @@ struct StartupManager {
               let arguments = plist["ProgramArguments"] as? [String],
               let first = arguments.first else { return nil }
         return first
+    }
+
+    /// True when the installed plist passes `--menu-bar-only`.
+    ///
+    /// Plists written before the menu-bar-only flag existed parse fine but would launch
+    /// the app with a window at every login. Surfaced by Diagnostics so the user can see
+    /// that their login item is stale without having to open the plist by hand.
+    func installedPlistIsMenuBarOnly() -> Bool {
+        guard let data = try? Data(contentsOf: StartupManager.plistURL),
+              let plist = try? PropertyListSerialization.propertyList(from: data,
+                                                                     options: [],
+                                                                     format: nil) as? [String: Any],
+              let arguments = plist["ProgramArguments"] as? [String] else { return false }
+        return arguments.contains(StartupManager.menuBarOnlyArgument)
     }
 
     /// True when the plist points at a path that no longer exists — the user moved the app.
@@ -132,12 +152,23 @@ struct StartupManager {
 
     /// Builds the LaunchAgent plist.
     ///
-    /// `ProgramArguments` is an absolute path — a LaunchAgent inherits no usable `PATH`
+    /// ## Why `--menu-bar-only` is passed
+    ///
+    /// The plist execs the **binary directly** — never `open -a`, which would be an
+    /// indirect launch that can be swallowed by Launch Services and that loses the
+    /// process's own arguments. `AppDelegate.requestedMenuBarOnly()` reads this flag and
+    /// the app then skips window creation entirely.
+    ///
+    /// That is the hard requirement for "Run at Startup": with the toggle ON the app must
+    /// be a menu-bar gadget **only** — no window, no Dock icon, no first-run window
+    /// shoving itself in the user's face at every login.
+    ///
+    /// `ProgramArguments[0]` is an absolute path — a LaunchAgent inherits no usable `PATH`
     /// and cannot resolve a bare executable name.
     private func makePlist(executablePath: String) throws -> Data {
         let plist: [String: Any] = [
             "Label": StartupManager.label,
-            "ProgramArguments": [executablePath],
+            "ProgramArguments": [executablePath, StartupManager.menuBarOnlyArgument],
             "RunAtLoad": true,
             "ProcessType": "Interactive",
             "LimitLoadToSessionType": "Aqua"

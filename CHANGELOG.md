@@ -12,7 +12,87 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 The first working build. Application code, the XcodeGen project specification and the CI
 pipeline now exist and both matrix legs build green on GitHub Actions.
 
+### Fixed
+
+Hotfix for a macOS 26 Tahoe report: **the process ran, but no window and no menu-bar item
+appeared.** The app looked completely dead. Root causes were found statically and all are fixed:
+
+- **Status item could render zero-width.** `installStatusItem()` set `imagePosition = .imageOnly`
+  from a single image source, so a missing or failed image produced an item with no intrinsic
+  width — indistinguishable from "never created". It now resolves an image through an explicit
+  fallback chain (SF Symbol → `StatusBarIcon` asset → code-drawn glyph) and *always* sets a `title`
+  with `.imageLeading`, so the item can never be zero-width. Creation is asserted to be on the main
+  thread inside `applicationDidFinishLaunching`, and the length is never 0.
+- **No first-run window.** `hasLaunchedOnce` did not exist, so a brand-new install launched
+  windowless with no Dock icon and no visible sign of life. The panel is now shown once on first
+  run, and only when a normal launch was intended.
+- **Cold-start URL actions could be silently dropped.** `handle(urls:)` re-dispatched exactly once
+  on the next runloop turn and discarded the URL if the presenter was not up yet. URLs are now
+  queued and drained once the status item exists, so all seven Shortcuts actions work with the app
+  not running.
+- **Activation policy is now asserted twice** — before and after the UI is built — so the
+  `.accessory` (no Dock icon) posture holds even if `Info.plist` is wrong.
+- **LaunchAgent launched the app with a window.** `ProgramArguments` now includes
+  `--menu-bar-only` and the binary is exec'd directly (no `open -a` indirection), so "Run at
+  Startup" produces a menu-bar gadget only.
+- `NSLog` varargs misuse (`%@` for a Swift `String`) in the URL router, which is a latent
+  format-string crash, replaced with a correct variadic call.
+
 ### Added
+
+- **`Diagnostics…`** menu item (⌘D) — CPU architecture, macOS version, process ID, activation
+  policy, launch posture, measured status-item width and resolved icon source, and whether the
+  LaunchAgent is installed and current. Selectable and copyable; the same text is written to the
+  log. This is the remote-debugging lifeline: the macOS 26 report was previously undiagnosable
+  without a log file.
+- `Trace` — lifecycle tracing on every launch, delegate, status-item, window and URL step, all
+  prefixed `[RosettaStone]`.
+- `scripts/first-run.sh` (Thai-commented) — removes the `com.apple.quarantine` attribute so
+  Gatekeeper does not re-prompt. **It does not disable Gatekeeper.**
+- `StatusBarIcon.imageset` in `Assets.xcassets` — the middle link of the status-item fallback
+  chain. The catalog was previously empty.
+- `docs/USER-GUIDE.md` §4 **"First run with Gatekeeper ON"** — the section was missing entirely,
+  even though §11 already cross-referenced §4.2 and §4.3.
+- `docs/FEATURES.md` §9 **"URL-scheme actions"** — the canonical table of all seven actions, which
+  the documentation did not previously contain anywhere.
+- `StartupManager.installedPlistIsMenuBarOnly()` — detects login items written before this flag
+  existed, surfaced by Diagnostics.
+
+### Changed
+
+- `docs/ARCHITECTURE.md` §2 documents the real `ProgramArguments` (the old value named a
+  `Rosetta Stone.app` path that the build never produces; the bundle is `RosettaStone.app`).
+
+### Not changed, deliberately
+
+- Signing stays **ad-hoc**. No notarisation is claimed anywhere in the project, and none is
+  implied by this release. First launch requires one user override — see §4 of the user guide.
+- The CI workflow structure and its triggers are untouched, and no `v*` tag was pushed.
+
+### Added
+
+- **`Diagnostics…`** menu item (⌘D) — CPU architecture, macOS version, process ID, activation
+  policy, launch posture, measured status-item width and resolved icon source, and whether the
+  LaunchAgent is installed and current. Selectable and copyable; the same text is written to the
+  log. This is the remote-debugging lifeline: the macOS 26 report was previously undiagnosable
+  without a log file.
+- `Trace` — lifecycle tracing on every launch, delegate, status-item, window and URL step, all
+  prefixed `[RosettaStone]`.
+- `scripts/first-run.sh` (Thai-commented) — removes the `com.apple.quarantine` attribute so
+  Gatekeeper does not re-prompt. **It does not disable Gatekeeper.**
+- `StatusBarIcon.imageset` in `Assets.xcassets` — the middle link of the status-item fallback
+  chain. The catalog was previously empty.
+- `docs/USER-GUIDE.md` §4 **"First run with Gatekeeper ON"** — the section was missing entirely,
+  even though §11 already cross-referenced §4.2 and §4.3.
+- `docs/FEATURES.md` §9 **"URL-scheme actions"** — the canonical table of all seven actions, which
+  the documentation did not previously contain anywhere.
+- `StartupManager.installedPlistIsMenuBarOnly()` — detects login items written before this flag
+  existed, surfaced by Diagnostics.
+
+### Changed
+
+- `docs/ARCHITECTURE.md` §2 documents the real `ProgramArguments` (the old value named a
+  `Rosetta Stone.app` path that the build never produces; the bundle is `RosettaStone.app`).
 
 - Complete application source under `RosettaStone/`: `App/`, `Models/`, `Services/`, `Views/Main/`,
   `Views/MenuBar/`, `Support/`, and the `Assets.xcassets` scaffold.
