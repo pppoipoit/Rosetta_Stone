@@ -1,5 +1,7 @@
 <h1 align="center">Rosetta Stone</h1>
 
+![CI Status](https://github.com/pppoipoit/Rosetta_Stone/actions/workflows/build-mac-dmg.yml/badge.svg) ![macOS 10.15 Catalina → 27 Golden Gate](https://img.shields.io/badge/macOS-10.15%20Catalina%20%E2%86%92%2027%20Golden%20Gate-0078d4?logo=apple) ![Swift 5.9+](https://img.shields.io/badge/Swift-5.9%2B-orange?logo=swift) ![Architecture arm64 | x86_64](https://img.shields.io/badge/Arch-arm64%20%7C%20x86__64-lightgrey?logo=apple) ![License MIT](https://img.shields.io/badge/License-MIT-green)
+
 <p align="center">
   <b>A native macOS utility for power-user system toggles.</b><br>
   SwiftUI dark-theme UI + AppKit <code>NSStatusItem</code> menu-bar residency.<br>
@@ -251,3 +253,13 @@ rosetta-stone/
 ## Licence
 
 See the repository's `LICENSE` file.
+
+---
+
+## 🎨 Credits
+
+Crafted with ❤️ by
+
+**pppoipoit** × **DRKMTTR Studio**
+
+*"Rosetta Stone — translating macOS complexity into a single click."*
