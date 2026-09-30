@@ -204,28 +204,34 @@ de-facto standard for open-source macOS projects.
 |------|------------|
 | An external Homebrew dependency in CI. | Installed explicitly in its own step, so a failure is clearly attributable. |
 | Less control over low-level DMG layout than raw `hdiutil`. | Accepted — the extra flexibility is not needed for a single-app image. |
-| Icon positions are hard-coded pixel coordinates. | Documented in [CI-CD.md §4](CI-CD.md#step-12--create-dmg) so they can be tuned knowingly. |
+| Icon positions are hard-coded pixel coordinates. | Documented in [CI-CD.md §4](CI-CD.md#step-8--create-dmg) so they can be tuned knowingly. |
 
 ### Command used
 
 ```bash
+cd dist
 create-dmg \
-  --volname "Rosetta Stone" \
-  --window-size 660 400 \
-  --icon-size 180 \
-  --icon "Rosetta Stone.app" 180 170 \
-  --app-drop-link 480 170 \
+  --volname "Rosetta Stone Installer" \
+  --window-pos 200 120 \
+  --window-size 600 400 \
+  --icon-size 100 \
+  --icon "RosettaStone-AppleSilicon.app" 150 190 \
+  --hide-extension "RosettaStone-AppleSilicon.app" \
+  --app-drop-link 450 190 \
   --no-internet-enable \
-  build/RosettaStone-AppleSilicon.dmg \
-  "Rosetta Stone.app"
+  "RosettaStone-AppleSilicon.dmg" \
+  "RosettaStone-AppleSilicon.app" \
+  || true
 ```
 
 | Flag | Purpose |
 |------|---------|
 | `--volname` | Volume name shown on mount. |
-| `--window-size` | Finder window size inside the image. |
-| `--icon` / `--app-drop-link` | App icon at (180, 170), /Applications symlink at (480, 170). |
+| `--window-pos` / `--window-size` | Finder window position and size inside the image. |
+| `--icon` / `--app-drop-link` | App icon at (150, 190), /Applications symlink at (450, 190). |
+| `--hide-extension` | Hides the `.app` extension so the mounted volume reads as a clean name. |
 | `--no-internet-enable` | Skips the `.DS_Store` artwork step — deterministic and faster. |
+| `\|\| true` | The following *Verify DMG* step independently fails on a missing or empty image, so a non-zero exit here is tolerated without risking a silent bad upload. |
 
 ### Alternatives considered
 
@@ -252,15 +258,14 @@ every release.
 ```yaml
 matrix:
   include:
-    - os: osx-arm64
-      app_name: RosettaStone-AppleSilicon
-      arch: arm64
-    - os: osx-x64
-      app_name: RosettaStone-Intel
-      arch: x86_64
+    - arch: arm64
+      output_name: RosettaStone-AppleSilicon
+    - arch: x86_64
+      output_name: RosettaStone-Intel
 ```
 
-Artefacts: `RosettaStone-AppleSilicon.dmg` and `RosettaStone-Intel.dmg`.
+Both legs run on `macos-latest`. Artefacts: `RosettaStone-AppleSilicon-dmg` and
+`RosettaStone-Intel-dmg`, containing `RosettaStone-AppleSilicon.dmg` and `RosettaStone-Intel.dmg`.
 
 ### Rationale
 A single **universal** binary is simpler for the user (one download, always the right slice), but it
