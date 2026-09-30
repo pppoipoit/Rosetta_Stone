@@ -43,11 +43,13 @@ struct RosettaStoneApp: App {
             // it never creates a visible window.
             EmptyView()
         }
-        .onOpenURL { url in
-            // macOS 11+ URL delivery. The delegate's `application(_:open:)` also runs,
-            // which is harmless: `URLActionRouter` treats a repeated action as a second
-            // explicit request, and the coordinator's busy guard collapses duplicates.
-            appDelegate.handle(urls: [url])
-        }
+        // NOTE: no `.onOpenURL` here. On macOS, SwiftUI delivers URLs to a scene through
+        // `handlesExternalEvents(matching:)`, not through the `onOpenURL(_:)` modifier that
+        // iOS provides — calling `onOpenURL` on a macOS `Settings` scene does not compile.
+        // URL delivery is handled in AppKit instead: `AppDelegate` implements
+        // `application(_:open:)`, which is the canonical AppKit entry point for
+        // `rosettastone://` URLs on every macOS version from 10.15 upward. That single path
+        // therefore serves both the 10.15 entry point and this one, so there is no second
+        // delivery route to keep in sync.
     }
 }

@@ -102,13 +102,15 @@ extension FeatureCoordinator {
                     guard let self = self else { return .failure(message: "App is shutting down.", exitCode: -1) }
                     let currentlyBypassed = SystemStateReader.isGatekeeperBypassed()
                     let target = (currentlyBypassed ?? false) == false
-                    self.publish {
-                        $0.statusMessage = StatusMessage(
-                            text: target
-                                ? "Gatekeeper is now bypassed. Re-enable it when you no longer need it."
-                                : "Gatekeeper is active again.",
-                            style: .success)
-                    }
+                    // `report(_:style:)` rather than assigning `statusMessage` directly:
+                    // the property is `private(set)`, and that setter is scoped to
+                    // FeatureCoordinator.swift, so this file — a separate file — could
+                    // not assign it even though it is the same type.
+                    self.report(
+                        target
+                            ? "Gatekeeper is now bypassed. Re-enable it when you no longer need it."
+                            : "Gatekeeper is active again.",
+                        style: .success)
                     return SystemCommands.runAsAdmin(
                         "\(Tool.spctl) --master-\(target ? "disable" : "enable")")
                 })
@@ -121,13 +123,12 @@ extension FeatureCoordinator {
                 work: { [weak self] in
                     guard let self = self else { return .failure(message: "App is shutting down.", exitCode: -1) }
                     let target = SystemStateReader.areHiddenFilesShown() == false
-                    self.publish {
-                        $0.statusMessage = StatusMessage(
-                            text: target
-                                ? "Hidden files are now visible in Finder."
-                                : "Hidden files are now hidden.",
-                            style: .success)
-                    }
+                    // See `toggleGatekeeper()` for why this goes through `report`.
+                    self.report(
+                        target
+                            ? "Hidden files are now visible in Finder."
+                            : "Hidden files are now hidden.",
+                        style: .success)
                     return SystemCommands.runShell("""
                     \(Tool.defaults) write com.apple.finder AppleShowAllFiles \(target ? "YES" : "NO") && \
                     \(Tool.killall) Finder
