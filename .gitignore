@@ -1,0 +1,49 @@
+# ==== macOS ====
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# ==== Xcode ====
+build/
+DerivedData/
+*.xcuserstate
+*.xcuserdatad/
+xcuserdata/
+*.moved-aside
+*.hmap
+*.ipa
+*.dSYM.zip
+*.dSYM
+
+# The Xcode project is GENERATED from project.yml by XcodeGen and is never
+# committed: a binary .xcodeproj cannot be reviewed in a diff and would drift
+# out of sync with project.yml. Run `xcodegen generate` after cloning.
+RosettaStone.xcodeproj/
+*.xcworkspace/xcshareddata/IDEWorkspaceChecks.plist
+
+# ==== Swift Package Manager ====
+.build/
+.swiftpm/
+Package.resolved
+
+# ==== Release artifacts ====
+*.dmg
+*.zip
+artifacts/
+dist/
+
+# ==== Signing / secrets — never commit ====
+*.mobileprovision
+*.p12
+*.cer
+*.certSigningRequest
+.env
+.env.*
+
+# ==== Editors / tools ====
+.vscode/*
+!.vscode/extensions.json
+.idea/
+*.swp
+*~

@@ -1,0 +1,65 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- ==== Identity ==== -->
+	<key>CFBundleIdentifier</key>
+	<string>com.rosettastone.app</string>
+	<key>CFBundleName</key>
+	<string>Rosetta Stone</string>
+	<key>CFBundleDisplayName</key>
+	<string>Rosetta Stone</string>
+	<key>CFBundleExecutable</key>
+	<string>RosettaStone</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleIconFile</key>
+	<string>AppIcon</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+
+	<!-- ==== Versioning (overridden by CI via PlistBuddy) ==== -->
+	<key>CFBundleShortVersionString</key>
+	<string>0.1.0</string>
+	<key>CFBundleVersion</key>
+	<string>1</string>
+
+	<!-- ==== Minimum deployment target: macOS 10.15 Catalina ==== -->
+	<key>LSMinimumSystemVersion</key>
+	<string>10.15</string>
+
+	<!-- ==== Agent app: no Dock icon, no menu bar app menu at launch ==== -->
+	<key>LSUIElement</key>
+	<true/>
+
+	<key>NSHighResolutionCapable</key>
+	<true/>
+	<key>NSSupportsAutomaticGraphicsSwitching</key>
+	<true/>
+
+	<!-- ==== Custom URL scheme: rosettastone://action ==== -->
+	<!-- Replaces App Intents, which requires macOS 13+. -->
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>com.rosettastone.app.scheme</string>
+			<key>CFBundleTypeRole</key>
+			<string>Editor</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>rosettastone</string>
+			</array>
+		</dict>
+	</array>
+
+	<!-- ==== Usage strings surfaced by macOS when commands are spawned ==== -->
+	<key>NSAppleEventsUsageDescription</key>
+	<string>Rosetta Stone uses Apple Events to control Gatekeeper and Finder, and to prompt for administrator credentials.</string>
+
+	<key>LSApplicationCategoryType</key>
+	<string>public.app-category.utilities</string>
+	<key>NSHumanReadableCopyright</key>
+	<string>Rosetta Stone is provided as-is with no warranty. Use at your own risk.</string>
+</dict>
+</plist>

@@ -1,0 +1,210 @@
+name: Build macOS DMG
+
+# ============================================================================
+# Rosetta Stone — build → sign → DMG → release
+# ============================================================================
+# โครงสร้าง ลำดับ step และรูปแบบคอมเมนต์ถูกยกมาจาก workflow ต้นแบบที่ build
+# แอป .NET (setup-dotnet → dotnet publish → ประกอบ .app → codesign →
+# create-dmg → ตรวจ DMG → upload-artifact → release job)
+# ต่างกันแค่กลไกการ build ซึ่งเปลี่ยนเป็น
+#     brew install xcodegen → xcodegen generate → xcodebuild
+# ส่วน trigger, matrix, การเซ็น ad-hoc, create-dmg, การตรวจ DMG,
+# การอัปโหลด artifact และ release job คงเดิมทั้งหมด
+#
+# ข้อสำคัญ: .xcodeproj ไม่ได้ commit ไว้ — project.yml คือไฟล์ต้นฉบับเดียว
+# และถูก generate ใหม่ทุกครั้งที่ CI ทำงาน
+# ============================================================================
+
+on:
+  # ปุ่ม "Run workflow" ในหน้า Actions
+  workflow_dispatch:
+  # push tag ที่ขึ้นต้นด้วย v เช่น v0.1.0 -> ให้ build และ release อัตโนมัติ
+  push:
+    tags:
+      - 'v*'
+
+# ปล่อยสิทธิ์เฉพาะที่จำเป็นต่อ release job
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build (${{ matrix.output_name }})
+    runs-on: macos-latest
+
+    strategy:
+      # ให้ทั้ง 2 สถาปัตยกรรม build ต่อกันแม้ตัวหนึ่งจะล้มเหลว
+      fail-fast: false
+      matrix:
+        # arch        = ค่าที่ส่งให้ xcodebuild ผ่าน ARCHS= ในขั้นตอนที่ 4
+        # output_name = ชื่อ .app ใน dist/ ชื่อไฟล์ .dmg และชื่อ artifact
+        include:
+          - arch: arm64
+            output_name: RosettaStone-AppleSilicon
+          - arch: x86_64
+            output_name: RosettaStone-Intel
+
+    steps:
+      # ------------------------------------------------------------------
+      # 1) ดึงซอร์สจาก repository
+      # ------------------------------------------------------------------
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # ------------------------------------------------------------------
+      # 2) [แทนที่ setup-dotnet] ติดตั้ง XcodeGen
+      #    .xcodeproj ไม่ได้ commit ไว้ใน repo — project.yml คือไฟล์ต้นฉบับ
+      #    เดียวของการตั้งค่า build ทั้งหมด และ CI สร้างมันใหม่ทุกครั้ง
+      # ------------------------------------------------------------------
+      - name: Install XcodeGen
+        run: |
+          brew install xcodegen
+
+      # ------------------------------------------------------------------
+      # 3) [แทนที่ dotnet restore] สร้าง .xcodeproj จาก project.yml
+      #    ผลลัพธ์คือ RosettaStone.xcodeproj + scheme ชื่อ RosettaStone ที่ถูก
+      #    mark เป็น shared ไว้ใน project.yml จึงมองเห็นได้จาก xcodebuild
+      # ------------------------------------------------------------------
+      - name: Generate Xcode project
+        run: |
+          set -euo pipefail
+          xcodegen generate --spec project.yml
+          echo "---- targets ----"
+          xcodebuild -list -project RosettaStone.xcodeproj
+
+      # ------------------------------------------------------------------
+      # 4) [แทนที่ dotnet publish] build แอปด้วย xcodebuild
+      #    -configuration Release = โหมดแจกจ่าย
+      #    -destination generic/platform=macOS บังคับให้ได้ตัวที่นำไป
+      #      แจกจ่ายได้ ไม่ใช่ตัวสำหรับ simulator
+      #    ARCHS + ONLY_ACTIVE_ARCH=NO บังคับสถาปัตยกรรมตาม matrix
+      #    CODE_SIGNING_ALLOWED=NO เพราะเราเซ็นเองในขั้นตอนที่ 6 แบบ ad-hoc
+      #      จึงไม่ต้องมี certificate บน runner
+      # ------------------------------------------------------------------
+      - name: Build Swift app (Release, ${{ matrix.arch }})
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -project RosettaStone.xcodeproj \
+            -scheme RosettaStone \
+            -configuration Release \
+            -derivedDataPath build \
+            -destination "generic/platform=macOS" \
+            ARCHS="${{ matrix.arch }}" \
+            ONLY_ACTIVE_ARCH=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            build
+
+      # ------------------------------------------------------------------
+      # 5) [แทนที่การประกอบ .app ด้วยมือ: mkdir + cat Info.plist + PkgInfo heredoc]
+      #    ตอนนี้ Xcode สร้าง bundle ให้ครบทั้ง Info.plist, PkgInfo, binary
+      #    executable และ Resources อยู่แล้ว จึงเหลือแค่ก๊อปมันออกมาไว้ใน
+      #    dist/ ตามชื่อของ leg นี้
+      #    Info.plist มาจาก RosettaStone/Support/Info.plist ผ่านค่า
+      #    INFOPLIST_FILE ใน project.yml และ LSMinimumSystemVersion ยังคงเป็น 10.15
+      # ------------------------------------------------------------------
+      - name: Collect app bundle
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          cp -R build/Build/Products/Release/RosettaStone.app \
+                "dist/${{ matrix.output_name }}.app"
+          echo "---- เนื้อหาใน bundle ----"
+          ls -l "dist/${{ matrix.output_name }}.app/Contents"
+
+      # ------------------------------------------------------------------
+      # 6) เซ็นแบบ ad-hoc (ไม่ใช้ Developer ID — ดู ADR-003)
+      #    -deep ครอบทุก framework/nested code ที่อยู่ใน .app
+      #    -f     เขียนทับลายเซ็นเดิม
+      # ------------------------------------------------------------------
+      - name: Ad-hoc codesign
+        run: |
+          set -euo pipefail
+          codesign --force --deep --sign - "dist/${{ matrix.output_name }}.app"
+          codesign --verify --verbose=2 "dist/${{ matrix.output_name }}.app"
+
+      # ------------------------------------------------------------------
+      # 7) ติดตั้งเครื่องมือสร้าง DMG
+      # ------------------------------------------------------------------
+      - name: Install create-dmg
+        run: |
+          brew install create-dmg
+
+      # ------------------------------------------------------------------
+      # 8) สร้าง DMG แบบลากวางลง Applications
+      #     --icon / --app-drop-link = ตำแหน่งไอคอนและลิงก์ /Applications
+      #     --hide-extension         = ซ่อน .app ให้เห็นเป็นชื่อสะอาด
+      #     cd dist                  = create-dmg หาไฟล์ต้นทางแบบ relative
+      #     || true                  = ไม่ล้มเหลว เพราะ create-dmg มักเตือนเรื่อง
+      #                              quarantine attribute / สิทธิ์บางอย่าง
+      #                              บน runner ซึ่งไม่กระทบความถูกต้องของ DMG
+      #                              (ขั้นตอนถัดไปยังตรวจไฟล์อีกชั้น)
+      # ------------------------------------------------------------------
+      - name: Create DMG
+        run: |
+          cd dist
+          create-dmg \
+            --volname "Rosetta Stone Installer" \
+            --window-pos 200 120 \
+            --window-size 600 400 \
+            --icon-size 100 \
+            --icon "${{ matrix.output_name }}.app" 150 190 \
+            --hide-extension "${{ matrix.output_name }}.app" \
+            --app-drop-link 450 190 \
+            --no-internet-enable \
+            "${{ matrix.output_name }}.dmg" \
+            "${{ matrix.output_name }}.app" \
+            || true
+
+      # ------------------------------------------------------------------
+      # 9) ตรวจสอบว่า DMG ถูกสร้างจริงก่อนอัปโหลด
+      #     ถ้าไม่มีไฟล์ หรือขนาดเป็น 0 ให้ fail ทันที พร้อมรายงานเข้า log
+      #     ของ workflow ผ่าน annotation ::error::
+      # ------------------------------------------------------------------
+      - name: Verify DMG
+        run: |
+          DMG="dist/${{ matrix.output_name }}.dmg"
+          if [ ! -f "$DMG" ] || [ ! -s "$DMG" ]; then
+            echo "::error::ไม่พบไฟล์ DMG ที่ ${DMG} (หรือไฟล์ว่างเปล่า)"
+            echo "---- ไฟล์ใน dist ----"
+            ls -lh dist || true
+            exit 1
+          fi
+          echo "---- ขนาดไฟล์ ----"
+          ls -lh "$DMG"
+
+      # ------------------------------------------------------------------
+      # 10) อัปโหลด DMG ขึ้นเป็น artifact ของ run นี้
+      #     แยก artifact ตามชื่อสถาปัตยกรรม จะได้ไม่ทับกัน
+      # ------------------------------------------------------------------
+      - name: Upload DMG artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.output_name }}-dmg
+          path: dist/${{ matrix.output_name }}.dmg
+          if-no-files-found: error
+
+  # ----------------------------------------------------------------------
+  # job สร้าง GitHub Release — ทำงานเฉพาะตอน push tag เท่านั้น
+  # รอให้ job build ทั้งสองสถาปัตยกรรมเสร็จก่อน (needs: build)
+  # ----------------------------------------------------------------------
+  release:
+    name: Publish GitHub Release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+
+    steps:
+      # ดึง artifact ทั้งหมดจาก job build มาไว้ในเครื่องนี้
+      - name: Download DMG artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dmgs
+
+      # สร้าง Release พร้อมไฟล์ .dmg ทั้งสองตัว
+      # generate_release_notes: true = ให้ GitHub สร้าง release note อัตโนมัติ
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dmgs/**/*.dmg
+          generate_release_notes: true

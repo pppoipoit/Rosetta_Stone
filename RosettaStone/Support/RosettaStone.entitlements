@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!--
+	  Rosetta Stone is distributed ad-hoc signed (CODE_SIGN_IDENTITY = "-").
+	  The hardened runtime is intentionally OFF: privileged shell commands are
+	  spawned via NSAppleScript / osascript, and the hardened runtime's library
+	  validation would break osascript interop on macOS 10.15.
+	-->
+	<key>com.apple.security.app-sandbox</key>
+	<false/>
+
+	<key>com.apple.security.cs.allow-jit</key>
+	<false/>
+	<key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+	<false/>
+	<key>com.apple.security.cs.disable-library-validation</key>
+	<true/>
+
+	<!-- Needed to read CPU arch and probe the Rosetta runtime presence. -->
+	<key>com.apple.security.cs.allow-dyld-environment-variables</key>
+	<false/>
+</dict>
+</plist>

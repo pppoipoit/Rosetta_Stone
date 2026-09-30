@@ -1,0 +1,121 @@
+# ============================================================================
+#  Rosetta Stone — XcodeGen project definition
+# ============================================================================
+#  The .xcodeproj is a GENERATED artefact and is deliberately not committed.
+#  A binary project file cannot be reviewed in a diff, cannot be merged, and
+#  rots silently as files are added. Instead the entire build configuration
+#  lives in this file, and every developer and CI run reproduces it exactly:
+#
+#      brew install xcodegen     # once
+#      xcodegen generate         # creates RosettaStone.xcodeproj
+#
+#  Source layout comes from docs/ARCHITECTURE.md §6.
+# ============================================================================
+
+name: RosettaStone
+
+options:
+  bundleIdPrefix: com.rosettastone
+  deploymentTarget:
+    macOS: "10.15"
+  createIntermediateGroups: true
+  groupSortPosition: top
+  generateEmptyDirectories: false
+  # The xcodeproj is disposable, so it never needs Xcode's own version metadata.
+  minimumXcodeGenVersion: "2.35.0"
+
+# No SPM dependencies: the app is a single target built entirely from the OS SDK
+# frameworks. There is deliberately no third-party menu-bar library (ADR-001) and
+# no privileged-helper package (ADR-006).
+
+settings:
+  base:
+    # --- Swift -----------------------------------------------------------
+    SWIFT_VERSION: "5.0"
+    # --- Deployment floor ------------------------------------------------
+    # macOS 10.15 Catalina is the hard requirement. This is what forbids
+    # MenuBarExtra (13+), App Intents (13+), SF Symbols in SwiftUI (11+),
+    # @StateObject (11+) and ProgressView (11+) — all of which the code
+    # deliberately avoids by using AppKit equivalents instead.
+    MACOSX_DEPLOYMENT_TARGET: "10.15"
+    # --- Hardening -------------------------------------------------------
+    # The hardened runtime's library validation breaks the osascript privilege
+    # bridge on 10.15, so it stays OFF (docs/ARCHITECTURE.md §7, ADR-003).
+    ENABLE_HARDENED_RUNTIME: NO
+    # --- Warnings --------------------------------------------------------
+    SWIFT_TREAT_WARNINGS_AS_ERRORS: NO
+    CLANG_WARN_DOCUMENTATION_COMMENTS: NO
+
+targets:
+  RosettaStone:
+    type: application
+    platform: macOS
+    deploymentTarget: "10.15"
+
+    sources:
+      - path: RosettaStone
+        # Info.plist and the entitlements file are build *settings inputs*, not
+        # bundle resources. Excluding them here stops XcodeGen copying a second
+        # copy of each into RosettaStone.app/Contents/Resources.
+        excludes:
+          - "Support/Info.plist"
+          - "Support/RosettaStone.entitlements"
+
+    settings:
+      base:
+        # --- Identity -----------------------------------------------------
+        # NO SPACE. The bundle Xcode produces is `RosettaStone.app`, which is the exact
+        # path CI copies out of DerivedData and the exact name create-dmg stages.
+        # The user-facing name "Rosetta Stone" still comes from
+        # CFBundleDisplayName in Support/Info.plist, so the Finder/Finder-Spotlight
+        # presentation is unchanged.
+        PRODUCT_NAME: RosettaStone
+        PRODUCT_BUNDLE_IDENTIFIER: com.rosettastone.app
+        # Executable name without a space. The LaunchAgent's ProgramArguments and
+        # CI both depend on this staying "RosettaStone" inside "RosettaStone.app".
+        EXECUTABLE_NAME: RosettaStone
+        INFOPLIST_FILE: RosettaStone/Support/Info.plist
+        # A hand-written Info.plist is used (LSUIElement, CFBundleURLTypes), so
+        # Xcode must not synthesise one.
+        GENERATE_INFOPLIST_FILE: NO
+        CURRENT_PROJECT_VERSION: "1"
+        MARKETING_VERSION: "0.1.0"
+        # --- Signing ------------------------------------------------------
+        # Ad-hoc signed: no Developer ID, no notarisation (ADR-003).
+        CODE_SIGN_STYLE: Manual
+        CODE_SIGN_IDENTITY: "-"
+        DEVELOPMENT_TEAM: ""
+        # --- Entitlements --------------------------------------------------
+        # com.apple.security.app-sandbox is FALSE in the entitlements file. This is
+        # REQUIRED, not optional: a sandboxed app cannot spawn spctl, nvram, mdutil,
+        # softwareupdate or osascript, and could not write the LaunchAgent at all.
+        CODE_SIGN_ENTITLEMENTS: RosettaStone/Support/RosettaStone.entitlements
+        # --- Runtimes -----------------------------------------------------
+        LD_RUNPATH_SEARCH_PATHS:
+          - "$(inherited)"
+          - "@executable_path/../Frameworks"
+        COMBINE_HIDPI_IMAGES: YES
+        ENABLE_USER_SCRIPT_SANDBOXING: NO
+        # --- Resources ----------------------------------------------------
+        # Assets.xcassets holds the placeholder catalogue; naming the icon set is
+        # harmless when the set exists and ignored when it does not.
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+
+    scheme:
+      # A shared scheme so `xcodebuild -scheme RosettaStone` works in CI.
+      # Without `shared: true` the scheme lives in xcuserdata and is invisible to
+      # a clean checkout.
+      gatherCoverageData: false
+      shared: true
+      testTargets: []
+      build:
+        targets:
+          RosettaStone: all
+      run:
+        config: Debug
+      profile:
+        config: Release
+      analyze:
+        config: Debug
+      archive:
+        config: Release
