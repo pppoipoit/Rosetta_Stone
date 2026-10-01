@@ -13,6 +13,12 @@ import Darwin
 /// switch; this type owns only the file on disk, which is the source of truth the toggle
 /// is derived from.
 ///
+/// ## No elevation (P1 #4)
+///
+/// The file lives in the user's **own home directory**, so every write is a plain
+/// `FileManager` call. Turning Run at Startup on or off must never raise a macOS password
+/// dialog — it changes the user's own preferences, not the system's. See `install()`.
+///
 /// A **LaunchAgent**, not a LaunchDaemon: it must run inside the user's Aqua session
 /// to be able to show a status item at all (`docs/ARCHITECTURE.md` §2).
 struct StartupManager {
@@ -90,33 +96,44 @@ struct StartupManager {
         return Bundle.main.bundlePath + "/Contents/MacOS/" + name
     }
 
-    /// The real UID of this process, used for `chown`ing the installed plist back to
-    /// the user.
+    /// The real UID of this process.
     ///
     /// `getuid()` rather than `ProcessInfo.userIdentifier`: the latter does not exist.
-    /// The process is never elevated at this point — elevation happens only inside the
-    /// child `osascript` shell — so `getuid()` is the user's UID, which is what the
-    /// LaunchAgent has to be owned by. (launchd derives the job's domain from the
-    /// plist's location in the user's own `~/Library/LaunchAgents`, so no `gui/<uid>`
-    /// string is ever needed — no `launchctl` call is made at all; see `install()`.)
+    /// The process is never elevated at this point, so `getuid()` is the user's UID. It is
+    /// retained only for the Diagnostics-adjacent comment about `gui/<uid>`; the write path
+    /// no longer shells out and no longer needs to `chown` anything, because the file is
+    /// created by the user who owns the directory it goes into.
     static var userID: uid_t { getuid() }
 
-    // MARK: - Install / remove (elevated)
+    // MARK: - Install / remove (unprivileged — this is the user's own home directory)
 
-    /// Writes the plist. Requires administrator privileges.
+    /// Writes the plist with `FileManager`. **No administrator privileges.**
     ///
-    /// The plist is staged in a temporary file first and copied into place by a root
-    /// shell, so the elevated command interpolates only quoted, app-controlled values.
+    /// ## Why there is no `osascript` elevation here (P1 #4)
     ///
-    /// ## Why no `launchctl` step here
+    /// The target is `~/Library/LaunchAgents/` — the user's **own home directory**, already
+    /// writable by the running user. The Phase-6 implementation ran a root shell
+    /// (`osascript … with administrator privileges`) to `mkdir`/`cp`/`chown` a file into it,
+    /// which meant that flipping "Run at Startup" — the most-used toggle in the app, and
+    /// the one that switches the app's whole posture — raised a macOS password dialog to
+    /// perform a `FileManager.createDirectory` + `Data.write`. On a machine where the user
+    /// is not in the admin group the toggle was simply broken, and where they were it
+    /// looked like the app demanded credentials for its own preferences.
+    ///
+    /// Two further reasons this is not merely inconvenient but actively wrong:
+    /// - A root-owned plist in the user's LaunchAgents directory is a **stale-ownership
+    ///   bug source**: the next install could not replace it without another prompt.
+    /// - `SystemCommands.runAsAdmin` shows the password sheet, which **steals focus**.
+    ///   Switching posture must not yank the user out of whatever they were doing.
+    ///
+    /// ## Why no `launchctl` step
     ///
     /// **`launchctl bootstrap`/`load` would launch a second instance immediately.** The
     /// job is `RunAtLoad`, so loading it starts the app *right now*, alongside the
     /// instance performing the install — two processes, two status items. The running
-    /// process becomes the gadget itself (`AppDelegate.apply(_:)`), and the job file
-    /// only has to exist for launchd to load it at the next login, which is exactly
-    /// what launchd does for every plist in `~/Library/LaunchAgents` without any
-    /// explicit load.
+    /// process becomes the gadget itself (`AppDelegate.apply(_:)`), and the job file only
+    /// has to exist for launchd to load it at the next login, which is exactly what launchd
+    /// does for every plist in `~/Library/LaunchAgents` without any explicit load.
     func install() -> CommandOutcome {
         let plistXML: Data
         do {
@@ -126,30 +143,29 @@ struct StartupManager {
                             exitCode: -1)
         }
 
-        let stagingURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent("com.rosettastone.helper.\(UUID().uuidString).plist")
+        let fileManager = FileManager.default
+        let directory = StartupManager.plistURL.deletingLastPathComponent()
         do {
-            try plistXML.write(to: stagingURL, options: .atomic)
+            // `~/Library/LaunchAgents` exists on any Mac that has ever shown a login item,
+            // but not necessarily in a bare account, so it is created if missing.
+            try fileManager.createDirectory(at: directory,
+                                            withIntermediateDirectories: true,
+                                            attributes: nil)
+            // `.atomic` writes to a temporary file and renames, so a crash mid-write can
+            // never leave launchd a truncated plist that fails to load at the next login.
+            try plistXML.write(to: StartupManager.plistURL, options: .atomic)
         } catch {
-            return .failure(message: "Could not stage the LaunchAgent file: \(error.localizedDescription)",
-                            exitCode: -1)
+            Trace.log("install failed: \(error.localizedDescription)")
+            return .failure(
+                message: "Could not write the login item to \(directory.path): \(error.localizedDescription)",
+                exitCode: -1)
         }
 
-        let uid = StartupManager.userID
-        let destination = SystemCommands.shellQuoted(StartupManager.plistURL.path)
-        let staged = SystemCommands.shellQuoted(stagingURL.path)
-        let directory = SystemCommands.shellQuoted(StartupManager.plistURL.deletingLastPathComponent().path)
-        let script = """
-        /bin/mkdir -p \(directory) && \
-        /bin/cp \(staged) \(destination) && \
-        /bin/chown \(uid) \(destination)
-        """
-
-        defer { try? FileManager.default.removeItem(at: stagingURL) }
-        return SystemCommands.runAsAdmin(script)
+        Trace.log("login item written without elevation: \(StartupManager.plistURL.path)")
+        return .success(output: StartupManager.plistURL.path)
     }
 
-    /// Deletes the plist. Requires administrator privileges.
+    /// Deletes the plist with `FileManager`. **No administrator privileges.**
     ///
     /// ## Why no `launchctl bootout` here
     ///
@@ -157,14 +173,27 @@ struct StartupManager {
     /// LaunchAgent — it is the at-login instance. `launchctl bootout` terminates a
     /// running job, so it would kill the app mid-operation instead of letting it remove
     /// its menu-bar icon and return to normal mode, which is exactly what the toggle
-    /// promises. Deleting the plist is sufficient: launchd only loads what exists at the
-    /// next login, and the already-loaded job will not restart the app (no `KeepAlive`).
+    /// promises. `bootout` in the per-user `gui/<uid>` domain does not need root — the
+    /// earlier `sudo` claim was equally wrong there — but it is still the wrong command:
+    /// deleting the plist is sufficient, because launchd only loads what exists at the
+    /// next login and the already-loaded job will not restart the app (no `KeepAlive`).
     func remove() -> CommandOutcome {
-        let path = SystemCommands.shellQuoted(StartupManager.plistURL.path)
-        let script = """
-        /bin/rm -f \(path)
-        """
-        return SystemCommands.runAsAdmin(script)
+        let fileManager = FileManager.default
+        do {
+            try fileManager.removeItem(at: StartupManager.plistURL)
+        } catch CocoaError.fileNoSuchFile {
+            // Already gone. Report success: the toggle's promise ("no login item") holds.
+            Trace.log("login item already absent — nothing to remove")
+            return .success(output: "already absent")
+        } catch {
+            Trace.log("remove failed: \(error.localizedDescription)")
+            return .failure(
+                message: "Could not delete the login item: \(error.localizedDescription)",
+                exitCode: -1)
+        }
+
+        Trace.log("login item deleted without elevation: \(StartupManager.plistURL.path)")
+        return .success(output: StartupManager.plistURL.path)
     }
 
     // MARK: - Plist construction
@@ -180,9 +209,16 @@ struct StartupManager {
     /// the app then launches as the hidden menu-bar gadget — the launch posture of
     /// mode B.
     ///
-    /// That is the hard requirement for "Run at Startup": with the toggle ON the app must
-    /// be a menu-bar gadget — hidden at login, no Dock icon, and no panel shoving itself
-    /// in the user's face at every login.
+    /// ## Why this flag is the app's only route into gadget mode
+    ///
+    /// It is what makes a manual double-click unambiguously "the user wants a window",
+    /// even with this plist sitting in `~/Library/LaunchAgents` (Phase-6 audit, P0). The
+    /// plist's *existence* decides the next login's posture; only this *argument* decides
+    /// a given process's posture.
+    ///
+    /// That is the hard requirement for "Run at Startup": with the toggle ON the login
+    /// launch must be a menu-bar gadget — hidden at login, no Dock icon, and no panel
+    /// shoving itself in the user's face at every login.
     ///
     /// `ProgramArguments[0]` is an absolute path — a LaunchAgent inherits no usable `PATH`
     /// and cannot resolve a bare executable name.
