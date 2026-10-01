@@ -7,6 +7,12 @@ import Darwin
 /// `~/Library/LaunchAgents/com.rosettastone.helper.plist` so the menu-bar icon
 /// reappears at every login.
 ///
+/// This is also the **mode switch of the whole app**: ON makes Rosetta Stone a menu-bar
+/// gadget (hidden launch, no Dock icon, URL actions live), OFF returns it to an ordinary
+/// windowed app. `AppMode` and `AppDelegate.apply(_:)` carry the runtime half of that
+/// switch; this type owns only the file on disk, which is the source of truth the toggle
+/// is derived from.
+///
 /// A **LaunchAgent**, not a LaunchDaemon: it must run inside the user's Aqua session
 /// to be able to show a status item at all (`docs/ARCHITECTURE.md` §2).
 struct StartupManager {
@@ -49,9 +55,10 @@ struct StartupManager {
 
     /// True when the installed plist passes `--menu-bar-only`.
     ///
-    /// Plists written before the menu-bar-only flag existed parse fine but would launch
-    /// the app with a window at every login. Surfaced by Diagnostics so the user can see
-    /// that their login item is stale without having to open the plist by hand.
+    /// The flag is belt-and-braces: mode B is derived from the plist's *existence*, so
+    /// even a plist written before the flag existed still launches as the hidden gadget.
+    /// Surfaced by Diagnostics because it distinguishes a login item written by the
+    /// current build from an older one.
     func installedPlistIsMenuBarOnly() -> Bool {
         guard let data = try? Data(contentsOf: StartupManager.plistURL),
               let plist = try? PropertyListSerialization.propertyList(from: data,
@@ -83,21 +90,33 @@ struct StartupManager {
         return Bundle.main.bundlePath + "/Contents/MacOS/" + name
     }
 
-    /// The real UID of this process, used for the `gui/<uid>` launchctl domain and for
-    /// `chown`ing the installed plist back to the user.
+    /// The real UID of this process, used for `chown`ing the installed plist back to
+    /// the user.
     ///
     /// `getuid()` rather than `ProcessInfo.userIdentifier`: the latter does not exist.
     /// The process is never elevated at this point — elevation happens only inside the
     /// child `osascript` shell — so `getuid()` is the user's UID, which is what the
-    /// LaunchAgent has to be owned by.
+    /// LaunchAgent has to be owned by. (launchd derives the job's domain from the
+    /// plist's location in the user's own `~/Library/LaunchAgents`, so no `gui/<uid>`
+    /// string is ever needed — no `launchctl` call is made at all; see `install()`.)
     static var userID: uid_t { getuid() }
 
     // MARK: - Install / remove (elevated)
 
-    /// Writes the plist and loads it. Requires administrator privileges.
+    /// Writes the plist. Requires administrator privileges.
     ///
     /// The plist is staged in a temporary file first and copied into place by a root
     /// shell, so the elevated command interpolates only quoted, app-controlled values.
+    ///
+    /// ## Why no `launchctl` step here
+    ///
+    /// **`launchctl bootstrap`/`load` would launch a second instance immediately.** The
+    /// job is `RunAtLoad`, so loading it starts the app *right now*, alongside the
+    /// instance performing the install — two processes, two status items. The running
+    /// process becomes the gadget itself (`AppDelegate.apply(_:)`), and the job file
+    /// only has to exist for launchd to load it at the next login, which is exactly
+    /// what launchd does for every plist in `~/Library/LaunchAgents` without any
+    /// explicit load.
     func install() -> CommandOutcome {
         let plistXML: Data
         do {
@@ -120,29 +139,29 @@ struct StartupManager {
         let destination = SystemCommands.shellQuoted(StartupManager.plistURL.path)
         let staged = SystemCommands.shellQuoted(stagingURL.path)
         let directory = SystemCommands.shellQuoted(StartupManager.plistURL.deletingLastPathComponent().path)
-        // `launchctl bootstrap` is the modern spelling; `load` is the 10.15-era one.
-        // Both are allowed to fail — `RunAtLoad` makes the job effective at next login.
         let script = """
         /bin/mkdir -p \(directory) && \
         /bin/cp \(staged) \(destination) && \
-        /bin/chown \(uid) \(destination) && \
-        /bin/launchctl bootstrap "gui/\(uid)" \(destination) 2>/dev/null || \
-        /bin/launchctl load \(destination) 2>/dev/null || true
+        /bin/chown \(uid) \(destination)
         """
 
         defer { try? FileManager.default.removeItem(at: stagingURL) }
         return SystemCommands.runAsAdmin(script)
     }
 
-    /// Unloads and deletes the plist. Requires administrator privileges.
+    /// Deletes the plist. Requires administrator privileges.
     ///
-    /// `launchctl unload` fails when the job was never loaded; that is deliberately
-    /// swallowed because a successful deletion is what the user asked for.
+    /// ## Why no `launchctl bootout` here
+    ///
+    /// When the toggle is turned OFF, this process was very likely started **by** that
+    /// LaunchAgent — it is the at-login instance. `launchctl bootout` terminates a
+    /// running job, so it would kill the app mid-operation instead of letting it remove
+    /// its menu-bar icon and return to normal mode, which is exactly what the toggle
+    /// promises. Deleting the plist is sufficient: launchd only loads what exists at the
+    /// next login, and the already-loaded job will not restart the app (no `KeepAlive`).
     func remove() -> CommandOutcome {
-        let uid = StartupManager.userID
         let path = SystemCommands.shellQuoted(StartupManager.plistURL.path)
         let script = """
-        (/bin/launchctl bootout "gui/\(uid)" \(path) 2>/dev/null || /bin/launchctl unload \(path) 2>/dev/null || true) && \
         /bin/rm -f \(path)
         """
         return SystemCommands.runAsAdmin(script)
@@ -156,12 +175,14 @@ struct StartupManager {
     ///
     /// The plist execs the **binary directly** — never `open -a`, which would be an
     /// indirect launch that can be swallowed by Launch Services and that loses the
-    /// process's own arguments. `AppDelegate.requestedMenuBarOnly()` reads this flag and
-    /// the app then skips window creation entirely.
+    /// process's own arguments.
+    /// `AppMode.resolve(menuBarOnlyArgument:launchAgentInstalled:)` reads this flag and
+    /// the app then launches as the hidden menu-bar gadget — the launch posture of
+    /// mode B.
     ///
     /// That is the hard requirement for "Run at Startup": with the toggle ON the app must
-    /// be a menu-bar gadget **only** — no window, no Dock icon, no first-run window
-    /// shoving itself in the user's face at every login.
+    /// be a menu-bar gadget — hidden at login, no Dock icon, and no panel shoving itself
+    /// in the user's face at every login.
     ///
     /// `ProgramArguments[0]` is an absolute path — a LaunchAgent inherits no usable `PATH`
     /// and cannot resolve a bare executable name.

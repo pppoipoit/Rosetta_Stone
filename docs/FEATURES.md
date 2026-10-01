@@ -44,38 +44,70 @@ Notation used throughout this document:
 
 ### Purpose
 Install or remove a per-user `LaunchAgent` so Rosetta Stone is automatically relaunched at every
-login. Because the app is an `LSUIElement` agent, "launched" means *menu-bar icon appears* — no
-Dock icon, no window stealing focus.
+login — and, in doing so, **choose the app's mode**. This toggle is the app's posture switch:
+
+| Toggle | Mode | Launch | Window | Dock icon | Menu-bar icon | URL actions |
+|--------|------|--------|--------|-----------|---------------|-------------|
+| OFF (default, first install) | **A — normal app** | panel shown | visible | **yes** | none | refused |
+| ON | **B — menu-bar gadget** | hidden | none at launch | **no** (`LSUIElement`) | always visible | all seven work |
+
+The switch takes effect **live**, in the running process: turning it ON installs the login item,
+installs the menu-bar icon and drops the Dock icon; turning it OFF deletes the login item,
+removes the menu-bar icon in-process and restores the normal app (Dock icon + window). No
+relaunch is involved in either direction.
+
+### Mode B at a glance
+
+- **Left-click the menu-bar icon toggles Gatekeeper directly** — no dropdown, no window. The
+  macOS password prompt appears, and a **toast** under the icon reports the outcome
+  (`StatusItemToast`: “Gatekeeper is bypassed.” / “Gatekeeper is active.” / the failure text).
+  A dismissed prompt is silent, and hovering the icon shows the same state in its tooltip.
+- **Right-click (or Control-click)** opens the full menu: Open Main Window, Toggle Hidden
+  Files, Flush DNS, Rebuild Spotlight, Clear System Cache… (confirmed), Diagnostics… (⌘D),
+  Quit (⌘Q).
+- The window is only ever shown on demand: the menu item, `rosettastone://open-app`, or a
+  Launch Services / Dock activation.
 
 ### Exact command
 
 Installation — writes a property list to the user's LaunchAgents directory **(admin)**:
 
 ```bash
-# Managed internally as: write plist -> launchctl load
-cat > ~/Library/LaunchAgents/com.rosettastone.helper.plist
-launchctl load ~/Library/LaunchAgents/com.rosettastone.helper.plist
+# Managed internally as: write plist to a staging file, then (as root)
+mkdir -p ~/Library/LaunchAgents
+cp <staged plist> ~/Library/LaunchAgents/com.rosettastone.helper.plist
+chown <uid> ~/Library/LaunchAgents/com.rosettastone.helper.plist
 ```
-
-The generated `com.rosettastone.helper.plist` targets the app's own bundle identifier
-(`com.rosettastone.app`) with `RunAtLoad = true`.
 
 Removal **(admin)**:
 
 ```bash
-launchctl unload ~/Library/LaunchAgents/com.rosettastone.helper.plist
 rm -f ~/Library/LaunchAgents/com.rosettastone.helper.plist
 ```
+
+**There is deliberately no `launchctl` step.** `launchctl bootstrap`/`load` would spawn a
+*second* instance immediately (the job is `RunAtLoad`), and `launchctl bootout` during removal
+would terminate the very process performing the removal. launchd loads every plist in
+`~/Library/LaunchAgents` at the next login by itself, and the running process carries the live
+mode switch — see `docs/ARCHITECTURE.md` §2.
+
+The generated `com.rosettastone.helper.plist` runs the app's **absolute executable path**
+directly (never `open -a`), passes `--menu-bar-only`, and sets `RunAtLoad = true`,
+`ProcessType = Interactive` and `LimitLoadToSessionType = Aqua`.
 
 ### State readback
 Toggle state = *does `~/Library/LaunchAgents/com.rosettastone.helper.plist` exist?*
 No elevation is needed to **read** this; elevation is only required to create/remove.
 
+The same read decides the **mode at launch**: plist exists → mode B (even for a manual
+double-click in Finder), plist absent → mode A. The `--menu-bar-only` argument is an
+additional, explicit signal used by the login launch.
+
 ### Availability
 
 | Platform | Supported | Notes |
 |----------|-----------|-------|
-| macOS 10.15+ | ✅ | `launchctl load` semantics |
+| macOS 10.15+ | ✅ | LaunchAgent plist semantics are unchanged across the whole range |
 | Intel x64 | ✅ | |
 | Apple Silicon arm64 | ✅ | Runs natively; no Rosetta required |
 
@@ -83,13 +115,22 @@ No elevation is needed to **read** this; elevation is only required to create/re
 - The plist path is per-user. Elevation is still used so the file is written outside a
   sandboxed / read-only context; if the process runs unelevated, the write falls back to the
   invoking user's home only.
-- A **stale** plist may exist from a previous install at a different path. The app must treat
-  "file exists" as ON even if `launchctl list` shows no loaded job, and offer a clean reinstall.
+- A **stale** plist may exist from a previous install at a different path — including one
+  written by an older build without `--menu-bar-only`. The app must treat "file exists" as ON
+  (and as mode B) even if `launchctl list` shows no loaded job, and offer a clean reinstall
+  (off → on) to regenerate it. Diagnostics flags a plist without the flag as an older-build
+  item.
 - If the user drags the app to a different location after enabling, the plist's
   `ProgramArguments` path becomes stale. The UI must show a warning until the user re-toggles
   the switch (off → on) to regenerate it.
-- `launchctl unload` fails if the job was never loaded; the implementation must not surface this
-  as a user-visible error when the plist deletion succeeded.
+- Cancelling the authorization prompt for ON leaves the app in mode A, and for OFF leaves it in
+  mode B. The mode follows the plist, and the plist only changes when the command actually
+  runs — the toggle can never claim a posture the disk does not have.
+- An already-loaded job from the current session is not unloaded by turning the toggle off. It
+  stays loaded until logout but cannot restart the app (there is no `KeepAlive`), and it is not
+  loaded at the next login because the file is gone.
+- Quitting the app (⌘Q / Quit in the menu) leaves the login item in place: the icon returns at
+  the next login, which is exactly what "Run at Startup" promises.
 
 ---
 
@@ -105,17 +146,46 @@ legacy installer) without Gatekeeper blocking it.
 
 ### Exact command
 
-Disable **(admin)**:
+Disable **(admin)** — one step on macOS 10.15 – 14, **two steps on macOS 15 and later**:
 
 ```bash
 spctl --master-disable
 ```
 
-Enable **(admin)**:
+Enable **(admin)** — one step on every version:
 
 ```bash
 spctl --master-enable
 ```
+
+### Disabling on macOS 15 Sequoia and later (Tahoe 26 / Golden Gate 27)
+
+```swift
+runCommand("spctl --master-disable")
+openURL("x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles")
+showAlert("กรุณาเลือก 'Anywhere' ใน System Settings เพื่อยืนยันการปิด Gatekeeper")
+```
+
+On macOS 15+ the CLI command alone no longer flips the **user-visible** switch: the user must
+also choose **Anywhere** under System Settings → Privacy & Security → Security → “Allow
+applications from”. The app therefore:
+
+1. runs `spctl --master-disable` (admin) exactly as before,
+2. opens System Settings at Privacy & Security, and
+3. shows the confirmation alert with the instruction above.
+
+The version rule lives in `SystemCommands.gatekeeperDisableRequiresSystemSettingsConfirmation(majorVersion:)`
+(`majorVersion >= 15`), so one call covers Sequoia, Tahoe and Golden Gate. `GatekeeperPolicy` owns
+the user-facing half: the deep link and the instruction text. Re-enabling never triggers the
+second step.
+
+| macOS | Disable procedure |
+|-------|-------------------|
+| 10.15 Catalina → 14 Sonoma | **1** — the CLI command is the whole job |
+| 15 Sequoia → 27 Golden Gate | **2** — CLI command, then the user picks **Anywhere** in System Settings |
+
+The app never tries to click “Anywhere” itself. System Settings is not scriptable for this
+switch, and automating a security downgrade would be indistinguishable from malware.
 
 ### State readback
 ```bash
@@ -129,8 +199,9 @@ spctl --status
 
 | Platform | Supported | Notes |
 |----------|-----------|-------|
-| macOS 10.15–12 | ✅ | |
-| macOS 13+ (Ventura) and later | ✅ | Apple removed the `--master-disable` option in macOS 13 for some policy-managed configurations; the command may return a non-zero exit code. Treat that as a failure and show the stderr. |
+| macOS 10.15–12 | ✅ | One-step procedure |
+| macOS 13–14 (Ventura / Sonoma) | ✅ | One-step; some policy-managed configurations reject the command — treat a non-zero exit as a failure and show the stderr |
+| macOS 15 Sequoia → 27 Golden Gate | ✅ | **Two-step procedure** — see above |
 | Intel x64 | ✅ | |
 | Apple Silicon arm64 | ✅ | |
 
@@ -138,6 +209,14 @@ spctl --status
 - On **Apple Silicon**, Gatekeeper is stricter and some enterprise MDM configurations
   re-enable it immediately. The app must re-read `spctl --status` after the command completes
   and reflect reality rather than optimistically assuming success.
+- On macOS 15+, between the command succeeding and the user choosing “Anywhere”, `spctl
+  --status` can still report the old value. The app raises the confirmation alert as soon as
+  the command succeeds and re-reads the state afterwards, so the toggle ends up reflecting
+  the disk rather than the request.
+- The switch, the right-click menu item, the **left-click direct toggle** and
+  `rosettastone://toggle-gatekeeper` all funnel through one write path
+  (`FeatureCoordinator.writeGatekeeper(bypassed:)`), so the two-step procedure cannot be
+  skipped on one of them.
 - If a corporate MDM profile manages the setting, the toggle will appear to snap back. Surface
   a hint that the setting is policy-managed.
 - Never leave the app in a state where the user cannot find how to re-enable it: the
@@ -206,7 +285,7 @@ the power button. Encoded as an NVRAM variable `AutoBoot` using a **3-digit zero
 value** — the format firmware expects.
 
 - `%00` = binary `000` = **disabled** (toggle OFF)
-- `%01` = binary `001` = **enabled** (toggle ON)
+- `%03` = binary `011` = **enabled** (toggle ON) — the Intel default for "auto boot on"
 
 > Note the deliberate divergence from the other features: here **ON = auto boot enabled**,
 > matching the system default. Only Hidden Files uses inverted semantics.
@@ -216,7 +295,7 @@ value** — the format firmware expects.
 Enable auto boot **(admin)**:
 
 ```bash
-nvram AutoBoot=%01
+nvram AutoBoot=%03
 ```
 
 Disable auto boot **(admin)**:
@@ -228,22 +307,27 @@ nvram AutoBoot=%00
 ### State readback
 ```bash
 nvram AutoBoot
-# AutoBoot    %01   -> toggle ON  (auto boot enabled)
+# AutoBoot    %03   -> toggle ON  (auto boot enabled)
+# AutoBoot    %01   -> toggle ON  (older firmware also means enabled)
 # AutoBoot    %00   -> toggle OFF (auto boot disabled)
 # (no output)        -> treat as OFF / unset
 ```
+`%01` is accepted as **enabled** on read: some Intel firmware reports the older value, and
+reading it as OFF would invite the user to "fix" a setting that is already correct.
 
 ### Availability
 
 | Platform | Supported | Notes |
 |----------|-----------|-------|
 | macOS 10.15+ on Intel | ✅ | T2 / T1 security chips and most iMacs/MacBook Pros expose `AutoBoot` |
-| macOS 10.15+ on Apple Silicon | ⛔ **Not supported** | Apple Silicon Macs boot from an internal volume only; the `AutoBoot` NVRAM variable does not exist. The row is **greyed out with a lock icon**. |
+| macOS 10.15+ on Apple Silicon | ⛔ **Not supported** | M-series Macs boot from an internal volume only; the `AutoBoot` NVRAM variable does not exist, and **NVRAM is reset on every cold boot**, so auto-boot cannot be modified by the user at all. The row is **disabled with a lock icon**, and hovering it shows the tooltip *"Apple Silicon ไม่รองรับ"*. |
 | Intel Macs without the variable | ⚠️ Partial | `nvram AutoBoot` returns no output; the toggle shows OFF and writes are ignored by firmware |
 
 ### Edge cases
 - **This is the primary CPU-gated feature.** `uname -m` returning `arm64` must disable the row
-  before the user can interact with it. Disabled, not hidden — see the mock-up.
+  before the user can interact with it. Disabled, not hidden — see the mock-up. The lock must also
+  *explain itself*: SwiftUI's `.help(_:)` is macOS 11+, so the row is wrapped in the AppKit-backed
+  `TooltipHost` and shows the owner-specified Thai tooltip **"Apple Silicon ไม่รองรับ"**.
 - NVRAM writes persist across reboots, macOS reinstalls, and OS upgrades. There is no per-session
   reset.
 - A value outside the expected `%00` / `%01` set must be surfaced as "unknown" rather than
@@ -410,6 +494,13 @@ None — transient action button with no persistent state.
 - ⚠️ **Destructive.** This is the highest-risk action in the app. It requires an explicit
   confirmation dialog *in addition to* the macOS authentication prompt, and the confirmation must
   state that open applications may misbehave and may need to be restarted.
+- The feature is **retained deliberately** rather than removed or buried: it is a documented,
+  requested capability. What it is *not* allowed to be is quiet about its risk. The warning is one
+  constant (`FeatureID.clearSystemCacheWarning`) shared by the panel sheet, the status-item menu
+  and the URL-scheme confirmation, so the three can never disagree; it opens with the
+  owner-specified Thai line **"⚠️ การล้าง System Cache อาจทำให้บางแอปช้าลงชั่วคราว"** and then
+  the English detail. The right-click menu item reads "Clear System Cache…", the ellipsis marking
+  the confirmation.
 - The glob `*` does not match dotfiles. A literal `rm -rf /Library/Caches/*` will not remove
   hidden entries; this is intentional and must not be "fixed" by switching to a different glob,
   which would risk removing the directory's own metadata.
@@ -427,6 +518,20 @@ None — transient action button with no persistent state.
 Rosetta Stone registers the custom scheme `rosettastone://` via `CFBundleURLTypes`. This is the
 only automation surface, and it is what makes all seven Shortcuts actions work **cold** — with the
 app not running at all.
+
+### Mode gate: power-user mode only
+
+URL actions belong to **mode B (Run at Startup ON)**. That is the mode in which the app is
+always running in the background, so Launch Services always finds a live instance.
+
+In **mode A (Run at Startup OFF, the default)** the app is not running in the background. If a
+`rosettastone://` URL arrives anyway — which cold-launches the app through Launch Services — the
+action is **refused**: the app logs it, shows the panel with a footer message (*“URL actions
+(rosettastone://) work only when Run at Startup is ON — turn it on to switch to menu-bar gadget
+mode.”*) and does not perform the action. Malformed/unknown URLs stay silent in every mode.
+
+This is deliberate: the default install must not be remotely actionable by URL. Turning Run at
+Startup ON is the explicit opt-in to the automation surface.
 
 ### Registered actions
 
@@ -457,15 +562,19 @@ unsafe.
 - An unknown or malformed URL is logged and discarded. **No user-facing error.** A shortcut that
   fires at 3 a.m. must never produce an alert nobody asked for.
 
-### Cold-start guarantee
+### Cold-start guarantee (mode B)
 
-All seven actions must work when the app is **not running**. Launch Services can deliver
-`application(_:open:)` before `applicationDidFinishLaunching` has finished building the status
-item, so:
+All seven actions must work when the app is **not running** and Run at Startup is ON. Launch
+Services can deliver `application(_:open:)` before `applicationDidFinishLaunching` has finished
+building the status item, so:
 
 1. A URL that arrives early is **queued**, never dropped.
 2. The queue is drained immediately after the status item exists, on the main thread.
 3. The status item is guaranteed to exist **before** any queued action runs.
+4. The queue is a **plain array bounded at 10 entries** (`AppDelegate.maxPendingURLs`), with the
+   **oldest** entries dropped on overflow so the most recent intent survives; the drop is logged.
+   There is no re-dispatch on the path, so a queued URL cannot be lost and the drain cannot
+   re-enter itself.
 
 An action that is unavailable on the current CPU (`install-rosetta` on Intel, for example) is
 silently ignored, exactly as it is from the panel.
@@ -490,7 +599,7 @@ silently ignored, exactly as it is from the panel.
 ### Toggle semantics
 | Feature | ON means |
 |---------|---------|
-| Run at Startup | The LaunchAgent plist exists |
+| Run at Startup | The LaunchAgent plist exists — the app is a menu-bar gadget (mode B) |
 | Gatekeeper | **Gatekeeper is disabled** (inverted — ON = insecure state) |
 | Hidden Files | **Hidden files are shown** (inverted vs. the system default) |
 | Auto Boot | Auto boot is enabled |

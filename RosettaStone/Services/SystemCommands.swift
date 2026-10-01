@@ -24,6 +24,39 @@ enum SystemCommands {
     /// Timeout for commands that legitimately take minutes (Rosetta 2 install).
     static let longTimeout: TimeInterval = 900
 
+    // MARK: - Gatekeeper procedure
+
+    /// `true` when **disabling** Gatekeeper needs the user's confirmation in System
+    /// Settings after `spctl --master-disable`.
+    ///
+    /// ## The version rule
+    ///
+    /// macOS 15 Sequoia — and macOS 26 Tahoe and macOS 27 Golden Gate after it — turned
+    /// the master switch into a **two-step** procedure. The CLI command still flips the
+    /// command-line assessment state, but the user-visible switch in System Settings
+    /// (“Allow applications from: Anywhere”) has to be confirmed by the user:
+    ///
+    /// | macOS | Steps to bypass Gatekeeper |
+    /// |-------|----------------------------|
+    /// | 10.15 Catalina → 14 Sonoma | **1** — `spctl --master-disable`. Done. |
+    /// | 15 Sequoia → 27 Golden Gate | **2** — the command, then the user picks **Anywhere** in System Settings |
+    ///
+    /// Re-enabling (`spctl --master-enable`, the OFF direction) is a single step on every
+    /// version and is deliberately **not** covered by this rule: it never needs a human in
+    /// System Settings.
+    ///
+    /// The OS-level follow-up — the deep link and the user-facing instruction — lives in
+    /// `GatekeeperPolicy`, because that is copy and presentation, not command execution.
+    /// The app cannot click “Anywhere” itself: System Settings is not scriptable for this
+    /// switch, and automating a security downgrade would be indistinguishable from malware.
+    ///
+    /// - Parameter majorVersion: injectable so the rule is testable without the host OS.
+    static func gatekeeperDisableRequiresSystemSettingsConfirmation(
+        majorVersion: Int = ProcessInfo.processInfo.operatingSystemVersion.majorVersion
+    ) -> Bool {
+        majorVersion >= 15
+    }
+
     // MARK: - Unprivileged execution
 
     /// Runs an executable directly — no `sh -c`, so nothing is re-interpreted.

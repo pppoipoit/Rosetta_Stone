@@ -28,7 +28,17 @@
 	<key>LSMinimumSystemVersion</key>
 	<string>10.15</string>
 
-	<!-- ==== Agent app: no Dock icon, no menu bar app menu at launch ==== -->
+	<!-- ==== Agent by default: no Dock icon unless mode A is active at runtime ==== -->
+	<!-- LSUIElement=true is the bulletproof half of the menu-bar (gadget) mode: the
+	     process can never leak a Dock tile by accident. The app has two modes, chosen
+	     by the Run at Startup toggle (see Models/AppMode.swift):
+	       · Mode A (Run at Startup OFF, the default) — AppDelegate sets
+	         NSApp.setActivationPolicy(.regular) at launch: window shown, Dock icon
+	         visible, no menu-bar icon.
+	       · Mode B (Run at Startup ON) — the accessory policy stands: hidden launch,
+	         no Dock icon, always-present menu-bar icon.
+	     Do not delete this key: mode B would then show a Dock icon until the delegate
+	     gets a chance to hide it. -->
 	<key>LSUIElement</key>
 	<true/>
 

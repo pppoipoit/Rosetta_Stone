@@ -37,14 +37,44 @@ extension FeatureCoordinator {
 
     /// ON == **bypassed**. The inverted semantics are deliberate: the switch shows what
     /// has actually been disabled rather than a vague "on".
+    ///
+    /// ## macOS 15+ is a two-step procedure
+    ///
+    /// On Sequoia (15) — and Tahoe (26) and Golden Gate (27) after it — the CLI command
+    /// alone no longer flips the user-visible switch: the user must also choose
+    /// **Anywhere** in System Settings. `writeGatekeeper(bypassed:)` runs the command and
+    /// then hands the confirmation to the UI, which opens the pane and explains the step
+    /// (`GatekeeperPolicy`). Re-enabling (`--master-enable`) is one step everywhere and
+    /// never triggers the confirmation.
     func setGatekeeper(bypassed: Bool) {
         perform(.gatekeeper,
                 successMessage: bypassed
                     ? "Gatekeeper is now bypassed. Re-enable it when you no longer need it."
                     : "Gatekeeper is active again.",
-                work: {
-                    SystemCommands.runAsAdmin("\(Tool.spctl) --master-\(bypassed ? "disable" : "enable")")
+                work: { [weak self] in
+                    self?.writeGatekeeper(bypassed: bypassed)
+                        ?? .failure(message: "App is shutting down.", exitCode: -1)
                 })
+    }
+
+    /// The single write path for feature 2, shared by the switch, the menu and the URL
+    /// scheme so the macOS 15+ follow-up can never be skipped on one of them.
+    ///
+    /// Runs on the coordinator's serial queue (inside `perform`). The user-facing
+    /// follow-up is dispatched to the main thread through `publish`, never called inline.
+    private func writeGatekeeper(bypassed: Bool) -> CommandOutcome {
+        let outcome = SystemCommands.runAsAdmin(
+            "\(Tool.spctl) --master-\(bypassed ? "disable" : "enable")")
+
+        // Only after a successful *disable* on macOS 15+ does System Settings need the
+        // user's hand. A failed command must not open System Settings: the failure
+        // message and a "go pick Anywhere" instruction would contradict each other.
+        if case .success = outcome,
+           bypassed,
+           SystemCommands.gatekeeperDisableRequiresSystemSettingsConfirmation() {
+            publish { $0.onGatekeeperNeedsConfirmation?() }
+        }
+        return outcome
     }
 
     // MARK: - 3. Hidden Files  (no elevation)
@@ -68,11 +98,14 @@ extension FeatureCoordinator {
 
     // MARK: - 4. Auto Boot  (admin, Intel only)
 
-    /// Writes the NVRAM `AutoBoot` variable: `%01` = enabled, `%00` = disabled — the
-    /// 3-digit zero-padded binary the firmware expects.
+    /// Writes the NVRAM `AutoBoot` variable: `%03` = enabled, `%00` = disabled — the
+    /// 3-digit zero-padded binary the firmware expects (`%03` is the Intel default for
+    /// "auto boot on"; `%01` is tolerated on read for machines already carrying it).
     ///
-    /// Guarded twice: the UI disables the row on Apple Silicon, and this guard protects
-    /// the URL-scheme path, which can be invoked without touching the UI at all.
+    /// Guarded twice: the UI disables the row on Apple Silicon — where M-series firmware
+    /// owns this variable and NVRAM is reset on every cold boot, so it cannot be changed
+    /// by the user at all — and this guard protects the write path itself, which can be
+    /// reached without touching the UI.
     func setAutoBoot(enabled: Bool) {
         guard availability(for: .autoBoot).isEnabled else {
             report("Auto Boot is not available on \(architecture.displayName) — this Mac has no AutoBoot NVRAM variable.",
@@ -82,7 +115,7 @@ extension FeatureCoordinator {
         perform(.autoBoot,
                 successMessage: enabled ? "Auto boot is enabled." : "Auto boot is disabled.",
                 work: {
-                    SystemCommands.runAsAdmin("\(Tool.nvram) AutoBoot=\(enabled ? "%01" : "%00")")
+                    SystemCommands.runAsAdmin("\(Tool.nvram) AutoBoot=\(enabled ? "%03" : "%00")")
                 })
     }
 
@@ -111,8 +144,9 @@ extension FeatureCoordinator {
                             ? "Gatekeeper is now bypassed. Re-enable it when you no longer need it."
                             : "Gatekeeper is active again.",
                         style: .success)
-                    return SystemCommands.runAsAdmin(
-                        "\(Tool.spctl) --master-\(target ? "disable" : "enable")")
+                    // Shared with `setGatekeeper`, so the macOS 15+ System Settings step
+                    // also runs for the menu-bar click and the URL action.
+                    return self.writeGatekeeper(bypassed: target)
                 })
     }
 

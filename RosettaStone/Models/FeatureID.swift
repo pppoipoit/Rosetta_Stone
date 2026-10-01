@@ -40,20 +40,39 @@ struct FeatureAvailability {
     /// Non-nil when the row is locked; surfaced as the row's subtitle and a 🔒.
     let lockReason: String?
 
-    static let available = FeatureAvailability(isEnabled: true, lockReason: nil)
+    /// Short hover tooltip for the locked row.
+    ///
+    /// Owned here rather than hard-coded in the view because the Auto Boot lock carries
+    /// owner-specified Thai copy. `nil` means "fall back to `lockReason`". It is attached
+    /// through `TooltipHost`, because SwiftUI's `.help(_:)` is macOS 11+ and this app's
+    /// floor is 10.15.
+    let tooltip: String?
 
-    static func locked(_ reason: String) -> FeatureAvailability {
-        FeatureAvailability(isEnabled: false, lockReason: reason)
+    static let available = FeatureAvailability(isEnabled: true, lockReason: nil, tooltip: nil)
+
+    static func locked(_ reason: String, tooltip: String? = nil) -> FeatureAvailability {
+        FeatureAvailability(isEnabled: false, lockReason: reason, tooltip: tooltip)
     }
 }
 
 extension FeatureID {
 
+    /// The warning shown in **every** Clear System Cache confirmation — the panel sheet,
+    /// the status-item menu and the URL-scheme confirmation.
+    ///
+    /// One constant for all three so they can never drift: `rm -rf /Library/Caches/*` is
+    /// the highest-risk action in the app, and the consequence has to be stated before the
+    /// macOS password prompt appears. Thai first (owner-mandated copy), English second.
+    static let clearSystemCacheWarning =
+        "⚠️ การล้าง System Cache อาจทำให้บางแอปช้าลงชั่วคราว\n"
+        + "Everything inside /Library/Caches will be deleted. Open applications may misbehave "
+        + "and need to be restarted, and there is no way to undo this."
+
     /// One-line explanation shown under the row title.
     var detail: String {
         switch self {
-        case .runAtStartup:     return "Launch the menu-bar icon automatically at every login."
-        case .gatekeeper:       return "ON means Gatekeeper is bypassed (less secure)."
+        case .runAtStartup:     return "ON switches to menu-bar gadget mode and starts it at every login."
+        case .gatekeeper:       return "ON means Gatekeeper is bypassed (macOS 15+ confirms in System Settings)."
         case .hiddenFiles:      return "ON means dotfiles are visible in Finder. Restarts Finder."
         case .autoBoot:         return "Power on automatically when power is restored."
         case .rosetta2:         return "Install Apple’s translation layer for Intel-only software."
@@ -83,7 +102,12 @@ extension FeatureID {
         switch self {
         case .autoBoot:
             guard architecture.supportsAutoBoot else {
-                return .locked("Auto Boot uses the firmware AutoBoot NVRAM variable, which does not exist on Apple Silicon.")
+                // Locked on Apple Silicon: M-series firmware owns `AutoBoot` and NVRAM is
+                // wiped on every cold boot, so the setting cannot be changed by the user.
+                // The tooltip is Thai by owner decision — `.disabled(true)` alone does not
+                // tell anyone *why* a row is dead.
+                return .locked("Auto Boot uses the firmware AutoBoot NVRAM variable, which does not exist on Apple Silicon.",
+                               tooltip: "Apple Silicon ไม่รองรับ")
             }
             return .available
         case .rosetta2:

@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 
 /// The ON/OFF pill switch from the mock-up.
 ///
@@ -32,6 +33,42 @@ struct PillSwitch: View {
         .padding(.trailing, isOn ? 5 : 8)
         .frame(width: 54, height: 26)
         .background(Capsule().fill(isOn ? Theme.accentGreen : Theme.accentGrey))
+    }
+}
+
+/// A tooltip attached to a real `NSView`.
+///
+/// SwiftUI's `.help(_:)` is **macOS 11+**, and this app deploys to 10.15, so the tooltip is
+/// put on AppKit instead. Used for locked rows (see `FeatureAvailability.tooltip`), where a
+/// `.disabled(true)` row would otherwise give the user nothing to hover for.
+struct TooltipHost<Content: View>: NSViewRepresentable {
+
+    /// Tooltip text. Empty means "no tooltip" — AppKit shows nothing.
+    let text: String
+
+    /// The SwiftUI content to host.
+    let content: Content
+
+    func makeNSView(context: Context) -> NSView {
+        let container = NSView(frame: .zero)
+        container.toolTip = text.isEmpty ? nil : text
+
+        let hosting = NSHostingView(rootView: content)
+        hosting.translatesAutoresizingMaskIntoConstraints = false
+        container.addSubview(hosting)
+        NSLayoutConstraint.activate([
+            hosting.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            hosting.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            hosting.topAnchor.constraint(equalTo: container.topAnchor),
+            hosting.bottomAnchor.constraint(equalTo: container.bottomAnchor)
+        ])
+        return container
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        // The lock state can change at runtime (a state reload), so the tooltip is refreshed
+        // rather than set once at creation.
+        nsView.toolTip = text.isEmpty ? nil : text
     }
 }
 
@@ -122,6 +159,20 @@ struct ConfirmButtonStyle: ButtonStyle {
                     .fill(fill.opacity(configuration.isPressed ? 0.75 : 1))
             )
             .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+    }
+}
+
+/// A small, quiet text button: the panel footer's **Diagnostics…** link.
+///
+/// Deliberately not a pill: it is a support affordance, not a feature, but it must stay
+/// visible because mode A has no menu-bar icon and therefore no other route to it.
+struct QuietLinkButtonStyle: ButtonStyle {
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.system(size: 10, weight: .medium))
+            .foregroundColor(Theme.info.opacity(configuration.isPressed ? 0.55 : 0.9))
+            .contentShape(Rectangle())
     }
 }
 

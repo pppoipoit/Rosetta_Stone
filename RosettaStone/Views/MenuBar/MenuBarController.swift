@@ -2,13 +2,27 @@ import AppKit
 import SwiftUI
 import Combine
 
-/// Owns the menu-bar item and the main panel window.
+/// Owns the menu-bar item and the main panel window, in both app modes.
 ///
 /// ## Why AppKit and not `MenuBarExtra`
 ///
 /// `MenuBarExtra` requires macOS 13. The deployment floor is macOS 10.15, so the status
 /// item is an AppKit `NSStatusItem` managed explicitly (ADR-001). This is the only file
 /// that has to know; everything else in the app is pure SwiftUI.
+///
+/// ## The two modes
+///
+/// - **Mode A (Run at Startup OFF, the default):** there is **no status item at all**.
+///   The controller exists only to own the window, and `AppDelegate` keeps the process
+///   `.regular` so the Dock icon is visible.
+/// - **Mode B (Run at Startup ON):** the status item is the app. **Left-click toggles
+///   Gatekeeper directly** — no dropdown, no window, straight to the macOS password
+///   prompt, with a **toast** (`StatusItemToast`) reporting the outcome. **Right-click**
+///   (or Control-click) opens the full menu: Open Main Window, Toggle Hidden Files, Flush
+///   DNS, Rebuild Spotlight, Clear System Cache… (confirmed), Diagnostics… (⌘D), Quit.
+///
+/// `setGadgetMode(_:)` installs or removes the status item live, which is what makes the
+/// Run at Startup toggle a posture switch rather than a next-login-only setting.
 ///
 /// ## Window ownership
 ///
@@ -18,54 +32,73 @@ import Combine
 /// - `.titled, .closable, .fullSizeContentView` with a transparent titlebar so the dark
 ///   panel bleeds to the edges like the mock-up,
 /// - the window is *not* released when closed, so reopening is instant and the
-///   coordinator's `@Published` state survives.
+///   coordinator's `@Published` state survives,
+/// - it is built in **both** modes: mode B needs it for "Open Main Window" and for the
+///   destructive-action sheet.
 ///
-/// The dropdown menu and its actions are in `MenuBarController+Menu.swift`.
+/// The dropdown menu and its actions live in the extension at the bottom of this file.
 final class MenuBarController: NSObject {
 
     // MARK: - Properties
 
     let coordinator: FeatureCoordinator
 
-    /// The status-bar item. Retained for the process lifetime.
+    /// The status-bar item. `nil` in mode A; retained for the process lifetime in mode B.
     private var statusItem: NSStatusItem?
 
-    /// The panel window. Retained even while hidden.
+    /// The panel window. Built in both modes and retained even while hidden.
     private var window: NSWindow?
 
-    /// `true` when the LaunchAgent started us and the app must be a menu-bar gadget only.
+    /// `true` while the process is in mode B — the menu-bar gadget.
     ///
-    /// When set, no window is ever built: not the panel, not the first-run window, not
-    /// the diagnostics sheet. Only the status item and its dropdown exist.
-    let menuBarOnly: Bool
+    /// Flips live: `AppDelegate` calls `setGadgetMode(_:)` the moment the Run at Startup
+    /// toggle completes, so this is never stale relative to the login item.
+    private(set) var gadgetMode: Bool
 
-    /// The dropdown menu shown on right-click. Built lazily on first use.
+    /// The dropdown menu shown on right-click. Built once, in `init`.
     private var menu: NSMenu = NSMenu()
 
     /// Which image source the status item actually resolved to. Surfaced by Diagnostics.
     private(set) var statusImageSource = "none"
+
+    /// `true` while the direct Gatekeeper toggle's outcome still has to be toasted.
+    ///
+    /// Armed on the click, then cleared by whichever outcome signal fires first: a
+    /// failure / "still running" message, or the state re-read that follows every
+    /// completed operation.
+    private var gatekeeperToastArmed = false
 
     /// Cancellations of the subscriptions tying menu enablement to feature state.
     private var cancellables: Set<AnyCancellable> = []
 
     // MARK: - Init
 
-    init(coordinator: FeatureCoordinator, menuBarOnly: Bool = false) {
+    /// - Parameter gadgetMode: `true` for mode B (status item installed, no window at
+    ///   launch), `false` for mode A (no status item, window shown by the delegate).
+    init(coordinator: FeatureCoordinator, gadgetMode: Bool) {
         self.coordinator = coordinator
-        self.menuBarOnly = menuBarOnly
+        self.gadgetMode = gadgetMode
         super.init()
         // Built once and retained for the process lifetime: the dropdown is presented
         // manually, and `updateMenuEnabledState` keeps mutating it.
         menu = makeMenu()
 
-        // Status item FIRST, and unconditionally. The window is optional; the status item
-        // is not. `--menu-bar-only` is precisely the mode in which the item is the whole app.
-        installStatusItem()
+        // The macOS 15+ Gatekeeper follow-up is a UI concern, so the coordinator reaches
+        // the UI through this hook instead of importing AppKit itself.
+        coordinator.onGatekeeperNeedsConfirmation = { [weak self] in
+            self?.presentGatekeeperSettingsConfirmation()
+        }
 
-        if menuBarOnly {
-            Trace.log("window not created: --menu-bar-only")
+        // The window is NOT optional in either mode: mode B needs it for "Open Main
+        // Window" and the destructive-action sheet, mode A is nothing but the window.
+        buildWindow()
+
+        // Mode B: the status item is the app, so it is created synchronously here, on the
+        // main thread. Mode A deliberately has none.
+        if gadgetMode {
+            installStatusItemIfNeeded()
         } else {
-            buildWindow()
+            Trace.log("status item skipped: mode A (Run at Startup off)")
         }
         observeState()
     }
@@ -100,8 +133,12 @@ final class MenuBarController: NSObject {
     /// 7. **…then measure it.** `verifyStatusItemIsVisible()` re-checks the width on the
     ///    next runloop turn and promotes the title if the item is still zero-width, so the
     ///    "invisible item" state is not merely unlikely but actively corrected.
-    private func installStatusItem() {
+    private func installStatusItemIfNeeded() {
         assert(Thread.isMainThread, "NSStatusItem must be created on the main thread")
+        guard statusItem == nil else {
+            Trace.log("status item already present; not creating a second one")
+            return
+        }
 
         // 2. variableLength, explicitly. Never 0.
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
@@ -130,7 +167,6 @@ final class MenuBarController: NSObject {
         // below can promote it to be rendered if the item still measures zero width.
         button.title = MenuBarController.fallbackTitle
         button.imagePosition = resolved.image != nil ? .imageOnly : .imageLeading
-        button.toolTip = "Rosetta Stone"
         button.target = self
         button.action = #selector(statusItemClicked(_:))
         // Both click types are delivered to the action. `item.menu` is deliberately
@@ -140,6 +176,7 @@ final class MenuBarController: NSObject {
         button.sendAction(on: [.leftMouseUp, .rightMouseUp])
 
         statusItem = item
+        updateStatusItemToolTip()
 
         // 7. The trace that makes this bug diagnosable from a bug report alone.
         //    Built by string interpolation rather than `NSLog` varargs: passing a Swift
@@ -222,7 +259,13 @@ final class MenuBarController: NSObject {
     /// it has an image, whether it has a title, and how wide it actually is. A non-zero
     /// width is the single clearest answer to "is the item actually on screen?".
     var statusItemState: String {
-        guard let item = statusItem else { return "missing (never created)" }
+        guard let item = statusItem else {
+            // `nil` is correct and expected in mode A. In mode B it is precisely the
+            // "process alive, nothing on screen" bug, so it is labelled as one.
+            return gadgetMode
+                ? "MISSING — mode B is on but no item was created (bug)"
+                : "not installed (mode A — Run at Startup off)"
+        }
         guard let button = item.button else { return "created, no button" }
         let hasImage = button.image != nil
         let hasTitle = !button.title.isEmpty
@@ -233,17 +276,46 @@ final class MenuBarController: NSObject {
             + "title: \(hasTitle ? "\"\(button.title)\"" : "none")"
     }
 
-    /// Left-click toggles the panel; right-click pops up the dropdown.
+    /// What AppKit is actually drawing.
+    ///
+    /// `NSStatusItem.isVisible` is the closest thing AppKit offers to answering "is my
+    /// glyph on screen?", and it is what the diagnostics report leads with. From macOS 26
+    /// Tahoe the user can also hide a third-party status item in **System Settings → Menu
+    /// Bar → Rosetta Stone → Allow in the Menu Bar**; there is no public API that reports
+    /// that switch, so the report carries the path to check instead.
+    var statusItemVisibility: String {
+        guard let item = statusItem else { return gadgetMode ? "no status item (bug)" : "no status item (normal mode)" }
+        return item.isVisible ? "yes — AppKit reports the item as visible" : "NO — AppKit reports it as hidden"
+    }
+
+    /// **Left-click toggles Gatekeeper directly.** **Right-click** (or Control-click)
+    /// pops up the full dropdown.
+    ///
+    /// This is the mode B contract: the gadget's primary job is one click away, with no
+    /// dropdown and no window in between. The full menu stays on the secondary click.
     @objc private func statusItemClicked(_ sender: NSStatusBarButton) {
-        guard let event = NSApp.currentEvent else {
-            toggleMainWindow()
-            return
-        }
-        if event.type == .rightMouseUp {
+        let event = NSApp.currentEvent
+        let isSecondaryClick = event?.type == .rightMouseUp
+            || (event?.type == .leftMouseUp
+                && event?.modifierFlags.contains(.control) == true)
+        if isSecondaryClick {
             presentMenu(from: sender)
         } else {
-            toggleMainWindow()
+            toggleGatekeeperFromStatusItem()
         }
+    }
+
+    /// The gadget's primary action: flip Gatekeeper.
+    ///
+    /// No dropdown, no panel, no window — only the macOS password prompt and a toast that
+    /// reports what actually happened. Everything the user needs to know is in the toast and
+    /// the status-item tooltip.
+    private func toggleGatekeeperFromStatusItem() {
+        assert(Thread.isMainThread, "status-item clicks arrive on the main thread")
+        Trace.log("status item left-click → toggling Gatekeeper")
+        StatusItemToast.show("Gatekeeper: waiting for authorization…", near: statusItem?.button)
+        gatekeeperToastArmed = true
+        coordinator.toggleGatekeeper()
     }
 
     /// Pops the dropdown up under the status item, anchored to its button.
@@ -275,7 +347,14 @@ final class MenuBarController: NSObject {
         panel.isExcludedFromWindowsMenu = true
         // The panel is dark by design (see `Theme`), independent of system appearance.
         panel.appearance = NSAppearance(named: .darkAqua)
-        panel.contentView = NSHostingView(rootView: ContentView(coordinator: coordinator))
+        // The panel's Diagnostics link. Mode A has no menu-bar icon at all, so this is
+        // the only route to the diagnostics report there.
+        panel.contentView = NSHostingView(rootView: ContentView(
+            coordinator: coordinator,
+            onShowDiagnostics: { [weak self] in
+                guard let self = self else { return }
+                DiagnosticsPanel.present(from: self)
+            }))
         panel.center()
 
         window = panel
@@ -283,12 +362,13 @@ final class MenuBarController: NSObject {
 
     /// Shows the panel and focuses it.
     ///
-    /// A no-op in `--menu-bar-only` mode: the window does not exist, and the whole point
-    /// of that mode is that no window ever does. Logged, because "I clicked the glyph and
-    /// nothing happened" is exactly the kind of report that needs an explanation.
+    /// Works in both modes: in mode B it is the "Open Main Window" menu item and the
+    /// landing point for `rosettastone://open-app`; in mode A it is how the app comes
+    /// back after the user closes the panel. It is never called automatically at launch
+    /// in mode B.
     func showMainWindow() {
         guard let panel = window else {
-            Trace.log("showMainWindow ignored: no window (menuBarOnly=\(menuBarOnly))")
+            Trace.log("showMainWindow ignored: no window")
             return
         }
         panel.makeKeyAndOrderFront(nil)
@@ -299,18 +379,75 @@ final class MenuBarController: NSObject {
         Trace.log("panel shown")
     }
 
-    /// Hides the panel without destroying it.
-    func hideMainWindow() {
-        window?.orderOut(nil)
+    // MARK: - Live mode switching
+
+    /// Installs or removes the status item, live.
+    ///
+    /// Called by `AppDelegate.apply(_:)` the moment the Run at Startup toggle completes.
+    /// Removing the item **in-process** is the "kill the menu-bar icon" half of turning
+    /// the toggle OFF; shelling out to `launchctl bootout` would have terminated this
+    /// very process instead of letting it return to normal mode.
+    func setGadgetMode(_ enabled: Bool) {
+        assert(Thread.isMainThread, "status item changes must happen on the main thread")
+        guard enabled != gadgetMode else { return }
+        gadgetMode = enabled
+        if enabled {
+            Trace.log("gadget mode ON — installing status item")
+            installStatusItemIfNeeded()
+        } else {
+            Trace.log("gadget mode OFF — removing status item")
+            removeStatusItem()
+        }
     }
 
-    /// Shows the panel if hidden, hides it if visible. Bound to a left-click.
-    func toggleMainWindow() {
-        if let panel = window, panel.isVisible {
-            hideMainWindow()
-        } else {
-            showMainWindow()
+    /// Tears the status item down. The process keeps running.
+    private func removeStatusItem() {
+        guard let item = statusItem else { return }
+        NSStatusBar.system.removeStatusItem(item)
+        statusItem = nil
+        Trace.log("status item removed")
+    }
+
+    /// Keeps the tooltip truthful about the one thing a left-click does.
+    ///
+    /// The direct Gatekeeper toggle has no window and no dropdown around it, so the
+    /// tooltip is the only surface that can confirm what the glyph will do before the
+    /// user commits to it.
+    private func updateStatusItemToolTip() {
+        guard let button = statusItem?.button else { return }
+        switch coordinator.gatekeeperBypassed {
+        case .some(true):
+            button.toolTip = "Rosetta Stone — Gatekeeper is bypassed. Left-click to re-enable."
+        case .some(false):
+            button.toolTip = "Rosetta Stone — Gatekeeper is active. Left-click to bypass."
+        case .none:
+            button.toolTip = "Rosetta Stone — Gatekeeper state unknown. Left-click to toggle."
         }
+    }
+
+    /// The macOS 15+ second step of disabling Gatekeeper.
+    ///
+    /// `FeatureCoordinator` calls this the moment `spctl --master-disable` succeeds on
+    /// macOS 15 / 26 / 27: the CLI alone no longer flips the user-visible switch, so
+    /// System Settings is opened and the user is told exactly what to choose. The
+    /// instruction copy is Thai by owner decision (`GatekeeperPolicy.confirmationMessage`).
+    func presentGatekeeperSettingsConfirmation() {
+        assert(Thread.isMainThread, "the confirmation alert must be raised on the main thread")
+
+        Trace.log("gatekeeper: macOS 15+ confirmation step — opening System Settings")
+        if let url = URL(string: GatekeeperPolicy.settingsURL) {
+            _ = NSWorkspace.shared.open(url)
+        }
+
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "Gatekeeper — one more step"
+        alert.informativeText = GatekeeperPolicy.confirmationMessage
+        alert.addButton(withTitle: "OK")
+        // A gadget may own no key window: activate first so the alert cannot open behind
+        // whatever the user was using.
+        NSApp.activate(ignoringOtherApps: true)
+        alert.runModal()
     }
 
     /// Brings the app forward without showing the panel — used before a modal alert so
@@ -353,10 +490,11 @@ extension MenuBarController {
 
 // MARK: - Dropdown menu
 
-    /// Builds the menu-bar dropdown: version, the quick actions, and Quit.
+    /// Builds the menu-bar dropdown: version line, the quick actions, and Quit.
     ///
-    /// Kept small on purpose — the features live in the panel. This menu exists so the app
-    /// is reachable while the panel is closed, which matters because there is no Dock icon.
+    /// This is the **right-click** menu — the left click never opens it. Kept small on
+    /// purpose: the features live in the panel. It exists so the app is reachable while
+    /// the panel is closed, which matters because the gadget has no Dock icon.
     private func makeMenu() -> NSMenu {
         let menu = NSMenu()
         menu.autoenablesItems = false
@@ -373,9 +511,16 @@ extension MenuBarController {
         architecture.isEnabled = false
         menu.addItem(architecture)
 
+        // Documents the primary click, which never opens this menu.
+        let hint = NSMenuItem(title: "Left-click toggles Gatekeeper",
+                              action: nil,
+                              keyEquivalent: "")
+        hint.isEnabled = false
+        menu.addItem(hint)
+
         menu.addItem(.separator())
 
-        let open = NSMenuItem(title: "Open Rosetta Stone",
+        let open = NSMenuItem(title: "Open Main Window",
                               action: #selector(openPanel),
                               keyEquivalent: "")
         open.target = self
@@ -387,17 +532,25 @@ extension MenuBarController {
         hiddenFiles.target = self
         menu.addItem(hiddenFiles)
 
-        let dns = NSMenuItem(title: "Flush DNS Cache",
+        let dns = NSMenuItem(title: "Flush DNS",
                              action: #selector(flushDNS),
                              keyEquivalent: "")
         dns.target = self
         menu.addItem(dns)
 
-        let spotlight = NSMenuItem(title: "Rebuild Spotlight Index",
+        let spotlight = NSMenuItem(title: "Rebuild Spotlight",
                                    action: #selector(rebuildSpotlight),
                                    keyEquivalent: "")
         spotlight.target = self
         menu.addItem(spotlight)
+
+        // Feature 8: the menu keeps the same explicit confirmation as the panel — a
+        // destructive command never runs from a menu click alone.
+        let clearCache = NSMenuItem(title: "Clear System Cache…",
+                                    action: #selector(confirmClearCache),
+                                    keyEquivalent: "")
+        clearCache.target = self
+        menu.addItem(clearCache)
 
         menu.addItem(.separator())
 
@@ -426,10 +579,6 @@ extension MenuBarController {
         showMainWindow()
     }
 
-    @objc private func toggleGatekeeper() {
-        coordinator.toggleGatekeeper()
-    }
-
     @objc private func toggleHiddenFiles() {
         // Read-then-write happens inside the coordinator's locked operation, so the pair
         // is atomic with respect to every other operation.
@@ -442,6 +591,27 @@ extension MenuBarController {
 
     @objc private func rebuildSpotlight() {
         coordinator.rebuildSpotlight()
+    }
+
+    /// Right-click menu → **Clear System Cache…**.
+    ///
+    /// A standalone alert rather than the panel sheet: the menu is the gadget's interface,
+    /// and opening the main window just to ask for a confirmation would defeat the mode.
+    /// The warning text is the same constant the panel and the URL scheme use.
+    @objc private func confirmClearCache() {
+        assert(Thread.isMainThread, "menu actions arrive on the main thread")
+        let alert = NSAlert()
+        alert.alertStyle = .critical
+        alert.messageText = "Clear the system cache?"
+        alert.informativeText = FeatureID.clearSystemCacheWarning
+        alert.addButton(withTitle: "Clear Cache")
+        alert.addButton(withTitle: "Cancel")
+        // An `.accessory` process may own no key window; activate first so the alert is
+        // attributed to Rosetta Stone instead of appearing behind whatever is in use.
+        NSApp.activate(ignoringOtherApps: true)
+        if alert.runModal() == .alertFirstButtonReturn {
+            coordinator.clearSystemCache()
+        }
     }
 
     @objc private func quit() {
@@ -460,6 +630,55 @@ extension MenuBarController {
             }
             .store(in: &cancellables)
 
+        // The tooltip is the direct Gatekeeper toggle's only feedback surface — there is
+        // no window and no dropdown around it — so it is kept in sync with reality.
+        coordinator.$gatekeeperBypassed
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in
+                self?.updateStatusItemToolTip()
+            }
+            .store(in: &cancellables)
+
+        // Outcome feedback for the direct toggle, split by who has the last word:
+        //
+        //  • a failure or a "still running" refusal is final — toast it immediately;
+        //  • a dismissed password prompt publishes `nil`, so stand down silently;
+        //  • otherwise the state publisher fires after the operation's authoritative
+        //    re-read, and *that* is the truth the toast reports.
+        //
+        // The optimistic success message that `toggleGatekeeper()` publishes up front is
+        // deliberately ignored: at that point nothing has happened yet.
+        coordinator.$statusMessage
+            .receive(on: RunLoop.main)
+            .sink { [weak self] message in
+                guard let self = self, self.gatekeeperToastArmed else { return }
+                guard let message = message else {
+                    self.gatekeeperToastArmed = false
+                    StatusItemToast.dismiss()
+                    return
+                }
+                guard message.style != .success else { return }
+                self.gatekeeperToastArmed = false
+                StatusItemToast.show(message.text, near: self.statusItem?.button)
+            }
+            .store(in: &cancellables)
+
+        coordinator.$gatekeeperBypassed
+            .dropFirst() // the value at subscription is not an outcome
+            .receive(on: RunLoop.main)
+            .sink { [weak self] bypassed in
+                guard let self = self, self.gatekeeperToastArmed else { return }
+                self.gatekeeperToastArmed = false
+                let text: String
+                switch bypassed {
+                case .some(true):  text = "Gatekeeper is bypassed."
+                case .some(false): text = "Gatekeeper is active."
+                case .none:        text = "Gatekeeper state could not be read."
+                }
+                StatusItemToast.show(text, near: self.statusItem?.button)
+            }
+            .store(in: &cancellables)
+
         updateMenuEnabledState()
     }
 
@@ -468,8 +687,8 @@ extension MenuBarController {
         for item in menu.items {
             guard let action = item.action else { continue }
             switch action {
-            case #selector(toggleGatekeeper), #selector(toggleHiddenFiles),
-                 #selector(flushDNS), #selector(rebuildSpotlight):
+            case #selector(toggleHiddenFiles), #selector(flushDNS),
+                 #selector(rebuildSpotlight), #selector(confirmClearCache):
                 // One operation at a time: while any privileged command is in flight
                 // every mutating item is disabled, so a second `osascript` prompt can
                 // never be raised from the menu while one is already on screen.

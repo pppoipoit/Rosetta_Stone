@@ -42,13 +42,17 @@ enum SystemStateReader {
         return value == "1" || value == "true" || value == "yes"
     }
 
-    /// `nvram AutoBoot` → `%01` enabled, `%00` disabled, no output or an unexpected
+    /// `nvram AutoBoot` → `%03` enabled, `%00` disabled, no output or an unexpected
     /// value → `nil` ("unknown"), surfaced in the UI rather than coerced to a boolean.
+    ///
+    /// `%01` is also accepted as **enabled**: some Intel firmware reports the older
+    /// value, and reading it as OFF would invite the user to "fix" a setting that is
+    /// already correct.
     static func isAutoBootEnabled() -> Bool? {
         guard let result = try? SystemCommands.run(Tool.nvram, ["AutoBoot"]), result.isSuccess else { return nil }
         let output = result.standardOutput.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !output.isEmpty else { return nil }
-        if output.contains("%01") { return true }
+        if output.contains("%03") || output.contains("%01") { return true }
         if output.contains("%00") { return false }
         return nil
     }

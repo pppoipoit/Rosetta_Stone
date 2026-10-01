@@ -72,6 +72,15 @@ final class FeatureCoordinator: ObservableObject {
     /// read-modify-write pair can never interleave with another operation.
     let queue = DispatchQueue(label: "com.rosettastone.coordinator")
 
+    /// Set by `MenuBarController`: the macOS 15+ follow-up for the Gatekeeper bypass.
+    ///
+    /// Invoked on the **main thread** the moment `spctl --master-disable` succeeds. The
+    /// UI opens System Settings and tells the user to pick “Anywhere” —
+    /// `GatekeeperPolicy` owns the version rule and the copy. A closure rather than an
+    /// `NSAlert` call here, because the coordinator must not import AppKit
+    /// (layering rule 1, `docs/ARCHITECTURE.md` §6).
+    var onGatekeeperNeedsConfirmation: (() -> Void)?
+
     /// The authoritative in-flight marker, touched **only** on `queue`.
     ///
     /// The single-operation lock must be decided on the serial queue. Deciding it from

@@ -10,8 +10,15 @@ A small utility that puts the macOS settings power users fiddle with constantly 
 startup behaviour, Gatekeeper, hidden files, Auto Boot, Rosetta 2, and a few one-shot maintenance
 commands.
 
-It lives in your **menu bar** (the row of icons at the top-right of your screen), not the Dock. It
-has no Dock icon, so it never takes up space among your other apps.
+Rosetta Stone has **two modes**, chosen by the **Run at Startup** toggle:
+
+- **OFF (the default):** a normal windowed app — panel at launch, Dock icon, no menu-bar icon.
+- **ON (power-user mode):** a menu-bar gadget — it launches hidden, has no Dock icon,
+  **left-click** toggles Gatekeeper, **right-click** opens the full menu, and the Shortcuts URL
+  actions work.
+
+You can switch between them whenever you like; the change takes effect immediately, with no
+relaunch.
 
 Every feature is a thin wrapper around a command you could type in Terminal yourself. Nothing is
 uploaded, nothing is tracked, and there is no account.
@@ -42,8 +49,9 @@ Check which chip you have:  → **Apple menu → About This Mac**.
 5. Close the DMG window, then **eject** the disk from the sidebar.
 6. Open **Applications → Rosetta Stone**.
 
-Rosetta Stone appears as a small stone glyph in your menu bar. It has **no Dock icon** — this is
-intentional. To open the panel, click the menu-bar glyph.
+Rosetta Stone opens as a **normal windowed app** with a Dock icon; there is no menu-bar icon in
+this default mode. The **Diagnostics…** link in the panel footer is always available. To switch
+to the menu-bar mode, turn **Run at Startup** ON (§6.1).
 
 ---
 
@@ -104,16 +112,22 @@ xattr -dr com.apple.quarantine "/Applications/RosettaStone.app"
 
 ### 4.4 Verifying the first run worked
 
-On first launch Rosetta Stone **opens its panel once**. This is intentional: the app has no
-Dock icon, so without it a brand-new installation would look like it had failed to start.
+In the default mode Rosetta Stone **opens its panel** at launch: the app starts as an ordinary
+windowed app, so a brand-new installation can never look like it silently failed.
 
-You should see a dark panel with the six feature rows, and a stone glyph in your menu bar.
+You should see a dark panel with the feature rows and a Dock icon.
 
-If you see neither, open **Diagnostics** to find out why:
+If you do not, open **Diagnostics…** — from the link in the panel footer, or by Control-clicking
+the menu-bar glyph in power-user mode — click **Copy Report**, and paste it into a bug report.
 
-1. Control-click the menu-bar glyph.
-2. Choose **Diagnostics…**.
-3. Click **Copy Report** and paste it into a bug report.
+### 4.5 Two different "Gatekeeper" things
+
+Worth separating, because they look identical on screen:
+
+| | What it is | What you do |
+|---|------------|-------------|
+| **First run** (§4.1–4.4) | macOS checking *this app* the first time you open it | Control-click → **Open** once (§4.2), or run `scripts/first-run.sh` (§4.3) |
+| **The Gatekeeper toggle** (§6.2) | Rosetta Stone turning macOS's Gatekeeper off for *everything on the Mac* | Your password — and on **macOS 15 Sequoia and later** it is a **two-step** procedure: after the command succeeds the app opens **System Settings → Privacy & Security** and shows a confirmation dialog — *"กรุณาเลือก 'Anywhere' ใน System Settings เพื่อยืนยันการปิด Gatekeeper"* — after which you choose **Anywhere** to finish |
 
 ---
 
@@ -123,24 +137,36 @@ The window is dark-themed and laid out top to bottom as follows.
 
 | Row | Control | What it does |
 |-----|---------|--------------|
-| **Run at Startup** | Toggle | Install / remove the login item |
+| **Run at Startup** | Toggle | Switch modes: install / remove the login item and the menu-bar icon |
 | **Gatekeeper** | Toggle | Disable / re-enable macOS Gatekeeper |
 | **Hidden Files** | Toggle | Show / hide dotfiles in Finder |
 | **Auto Boot** | Toggle | Power on automatically — **Intel only** |
 | **Rosetta 2** | Install button | Install the Rosetta 2 translator — **Apple Silicon only** |
 | **Quick Tools** | 3 buttons | Spotlight / DNS / Cache |
 
-### The menu-bar menu
+### The menu-bar icon (power-user mode only)
 
-Click the menu-bar glyph to open the panel. Control-clicking the same glyph gives a small menu with
-quick access to the app, its version, **Diagnostics…**, and a Quit command. The app has no Dock
-icon, so this menu and the panel are the only ways to reach it once running.
+The glyph exists only while **Run at Startup** is ON (§6.1).
+
+| Gesture | What it does |
+|---------|--------------|
+| **Left-click** | Toggles Gatekeeper immediately — no menu, no window. You get the password prompt, then a small toast under the icon with the result |
+| **Right-click** (or Control-click) | Opens the full menu: Open Main Window, Toggle Hidden Files, Flush DNS, Rebuild Spotlight, Clear System Cache… (asks first), **Diagnostics…** (⌘D), Quit (⌘Q) |
+
+Hover the glyph and the tooltip tells you Gatekeeper's current state and what a left-click will
+do.
+
+> **The icon does not appear at all?** On **macOS 26 Tahoe and later** you can hide it in System
+> Settings: **System Settings → Menu Bar → Rosetta Stone → allow the item in the Menu Bar**. Turn
+> it back on there. (ถ้าไอคอนไม่โผล่ ให้ไปที่ System Settings → Menu Bar → หา Rosetta Stone →
+> เปิดสวิตช์ Allow in the Menu Bar.) **Diagnostics…** reports whether AppKit thinks the item is
+> visible at all.
 
 ### Diagnostics
 
-**Diagnostics…** (or press ⌘D with the menu open) shows the state of the running app: CPU
-architecture, macOS version, process ID, activation policy, launch posture, the status item's
-measured width and which icon it resolved, and whether the login item is installed.
+**Diagnostics…** — the link in the panel footer, or ⌘D in the menu-bar menu — shows the state of
+the running app: CPU architecture, macOS version, process ID, launch mode, activation policy, the
+status item's measured width and which icon it resolved, and whether the login item is installed.
 
 Use it whenever something looks wrong — an empty menu-bar slot, a missing icon, or a login item
 that does not fire. Click **Copy Report** and paste the result into a bug report; it replaces a
@@ -156,23 +182,43 @@ chip. The row is kept visible — rather than hidden — so the app looks identi
 | Auto Boot | Apple Silicon |
 | Rosetta 2 | Intel |
 
+Hovering a locked row shows a tooltip saying why. On Apple Silicon the Auto Boot tooltip reads
+**"Apple Silicon ไม่รองรับ"**: M-series firmware owns the auto-boot setting, and its NVRAM is reset
+on every cold boot, so it cannot be changed by the user at all.
+
 ---
 
 ## 6. Using each feature
 
-### 6.1 Run at Startup
+### 6.1 Run at Startup — the mode switch
 
-**ON** installs a login item at `~/Library/LaunchAgents/com.rosettastone.helper.plist` so the
-menu-bar icon appears automatically every time you log in. **OFF** removes it.
+This toggle does two things at once: it installs a login item at
+`~/Library/LaunchAgents/com.rosettastone.helper.plist`, **and** it switches the app's mode.
 
-The login item starts the app as a **menu-bar gadget only** — no window opens at login, and there
-is no Dock icon. Click the glyph to open the panel whenever you want it.
+| | OFF (default) | ON (power-user mode) |
+|---|---------------|----------------------|
+| At launch | panel opens | starts hidden |
+| Dock icon | yes | no |
+| Menu-bar icon | none | always |
+| Left-click the icon | — | toggles Gatekeeper directly |
+| Right-click the icon | — | full menu |
+| `rosettastone://` actions | refused (the app is not running in the background) | all seven work |
+
+Both directions take effect **immediately** — no relaunch:
+
+- Turning it **ON** installs the login item, the Dock icon disappears and the stone glyph appears
+  in the menu bar. The panel you are looking at stays open; from the next login the app starts
+  hidden.
+- Turning it **OFF** removes the login item, removes the glyph, and restores the Dock icon and
+  normal window behaviour.
 
 - Requires your administrator password.
 - If you move Rosetta Stone to a different folder after turning this on, turn it off and on again
   so the login item is regenerated with the new path.
 - Login items created by an older version did not pass the menu-bar-only flag. Turn the toggle off
   and on once to regenerate it; **Diagnostics…** reports whether yours is current.
+- With the toggle ON, double-clicking the app in Finder also opens it in gadget mode (hidden).
+  Use the right-click menu → **Open Main Window** to see the panel.
 
 ### 6.2 Gatekeeper
 
@@ -185,6 +231,11 @@ what you have actually disabled rather than a vague "on".
 | ON | Gatekeeper's master switch is disabled — unsigned software runs without warnings |
 
 - Requires your administrator password.
+- **On macOS 15 Sequoia and later, turning it ON is a two-step procedure.** After the password
+  prompt, Rosetta Stone opens **System Settings → Privacy & Security** and shows a confirmation
+  dialog: *"กรุณาเลือก 'Anywhere' ใน System Settings เพื่อยืนยันการปิด Gatekeeper"*. Choose
+  **Anywhere** under *Allow applications from* to complete the change. Turning it OFF is always a
+  single step.
 - If your Mac is managed by your employer or school, this setting may be enforced by policy and
   will switch itself back on. Rosetta Stone re-reads the real state after every change, so the
   switch will snap back to reflect reality.
@@ -207,7 +258,10 @@ pressed.
 - It writes to NVRAM, which is permanent firmware storage. If you turn it off by mistake, use
   Rosetta Stone to turn it back on — but if the write is interrupted the Mac may not auto-power
   until you do.
-- Greyed out with a lock icon on Apple Silicon, where this setting does not exist.
+- **Apple Silicon: the row is locked, and hovering it reads "Apple Silicon ไม่รองรับ".** M-series
+  firmware owns auto-boot and its NVRAM is reset on every cold boot, so the setting cannot be
+  changed by the user at all — there is nothing for the toggle to write.
+- On Intel the command is `nvram AutoBoot=%03` to enable and `%00` to disable.
 
 ### 6.5 Rosetta 2 — Apple Silicon only
 
@@ -230,9 +284,10 @@ Three one-shot buttons. None of them holds an ON/OFF state — they do a thing a
 | **DNS** | Clears the DNS cache and restarts the network resolver. Your network blips for a fraction of a second; active downloads and VPN sessions may drop. | Password |
 | **Cache** | Deletes the contents of `/Library/Caches`. **There is no undo.** | Password + confirmation |
 
-> ⚠️ **Before pressing Cache:** open applications may start misbehaving and may need to be
-> restarted. Caches regenerate on their own, but the gap in between can be noticeable. Close what
-> you can, and consider restarting afterwards.
+> ⚠️ **Before pressing Cache:** *"⚠️ การล้าง System Cache อาจทำให้บางแอปช้าลงชั่วคราว"* — open
+> applications may start misbehaving and may need to be restarted. Caches regenerate on their own,
+> but the gap in between can be noticeable. Close what you can, and consider restarting afterwards.
+> The same warning appears in the right-click menu's **Clear System Cache…** confirmation.
 
 A button stays disabled while its own action is running, and only one privileged action runs at a
 time, so you will never get two password dialogs stacked on top of each other.
@@ -247,23 +302,27 @@ time, so you will never get two password dialogs stacked on top of each other.
 | The password was wrong three times | macOS locks out further attempts temporarily. Wait a few minutes and try again. |
 | A toggle did not stick | Something else changed the setting — usually a corporate management profile. Rosetta Stone re-reads the real state and shows it to you. |
 | Finder restarted | Expected after toggling Hidden Files. |
-| Nothing is in the Dock | Expected. The app is a menu-bar agent by design. |
-| The app does not reappear after reboot | Turn **Run at Startup** on, then log out and back in. |
+| Nothing is in the Dock | Expected in power-user mode (Run at Startup ON). Turn it OFF to get the Dock icon back. |
+| There is no menu-bar icon | Expected in the default mode. Turn **Run at Startup** ON (§6.1) to switch to menu-bar mode. |
+| The app does not reappear after reboot | It only does so in power-user mode: turn **Run at Startup** on, then log out and back in. |
 
 ---
 
 ## 8. Uninstalling
 
-1. Click the menu-bar glyph, then Control-click for the menu, and choose **Quit**.
+1. Quit the app: **right-click the glyph → Quit** in power-user mode, or **⌘Q** in the default
+   mode.
 2. Drag **Rosetta Stone** from **Applications** to the **Trash**.
 3. Empty the Trash.
 
 Optional cleanup — remove the login item if you had enabled it:
 
 ```bash
-launchctl unload ~/Library/LaunchAgents/com.rosettastone.helper.plist 2>/dev/null
 rm -f ~/Library/LaunchAgents/com.rosettastone.helper.plist
 ```
+
+(No `launchctl` call is needed: deleting the file is what stops the app from starting at the next
+login. A loaded job from the current session cannot restart the app and disappears at logout.)
 
 Rosetta Stone keeps no other files, no preferences, and no caches. Uninstalling removes everything
 it added.
@@ -279,6 +338,10 @@ it added.
 Rosetta Stone can be driven from Apple Shortcuts through its `rosettastone://` URL scheme. This lets
 you put a system action on a keyboard shortcut, a Siri voice command, or an automation.
 
+> **Power-user mode required.** URL actions only work while **Run at Startup** is ON (§6.1). In the
+> default mode the app is not running in the background, so a URL is refused and the panel opens
+> with an explanation.
+
 ### 9.1 The action list
 
 | Action | URL | Password? | Works on |
@@ -292,7 +355,9 @@ you put a system action on a keyboard shortcut, a Siri voice command, or an auto
 | Install Rosetta 2 | `rosettastone://install-rosetta` | Yes | Apple Silicon only |
 
 An action that does not apply to your Mac — `install-rosetta` on an Intel Mac, for example — is
-silently ignored. No error, no alert.
+silently ignored. No error, no alert. So is an unknown URL. A **recognised** action sent while
+**Run at Startup** is OFF is *deliberately refused*: the panel opens and the footer explains that
+the power-user mode is required.
 
 ### 9.2 Build a shortcut
 
@@ -312,7 +377,7 @@ To try it immediately, click the ▶ button at the top of the Shortcuts window.
 |---------------|-----|---------------|
 | Show/Hide Hidden Files | `rosettastone://toggle-hidden-files` | Bind to ⌘⇧. — the classic dotfile key |
 | Flush DNS | `rosettastone://flush-dns` | Run from a terminal-adjacent workflow after switching VPN |
-| Open Rosetta Stone | `rosettastone://open-app` | Menu-bar app, no Dock icon — this is your launcher |
+| Open Main Window | `rosettastone://open-app` | Power-user mode: show the panel without touching the glyph |
 | Rebuild Spotlight | `rosettastone://rebuild-spotlight` | Run overnight, e.g. at 2 a.m. |
 | Install Rosetta 2 | `rosettastone://install-rosetta` | One-time setup, Apple Silicon only |
 
@@ -350,7 +415,7 @@ open "rosettastone://flush-dns"
 | Consideration | Detail |
 |---------------|--------|
 | Password prompts | Any action marked *Yes* above still raises the macOS password dialog, even when triggered by an automation. macOS has no way to pre-authorise a GUI script, so your automation will pause until you type your password. |
-| Background execution | An action triggered while the app is closed launches it in the background — **no window appears**. That is intentional. The action is queued and runs as soon as the app finishes starting, so a cold start works exactly like a warm one. |
+| Background execution | In power-user mode, an action triggered while the app is closed cold-launches it into the background — **no window appears**. That is intentional. The action is queued and runs as soon as the app finishes starting, so a cold start works exactly like a warm one. In the default mode the URL is refused instead. |
 | Silent success | Nothing pops up to tell you it worked. Check the toggle state, or add a `Notify` action in Shortcuts if you want feedback. |
 | Destructive actions | `clear-cache` keeps its confirmation dialog even when driven by a URL. Automating it requires you to click **Confirm** each time. |
 | Duplicating actions | Toggling actions flip state. Do not put `toggle-gatekeeper` in a shortcut that runs repeatedly — use it deliberately. |
@@ -380,14 +445,17 @@ machine.
 | Problem | Try this |
 |---------|----------|
 | "Cannot be opened because the developer cannot be verified" | Control-click → **Open** (§4.2), or run `scripts/first-run.sh` (§4.3) |
-| No menu-bar icon after launch | Open **Diagnostics…** (§5). If the status item reports a width of 0 the icon failed to render; if it reports "missing (never created)" the app did not finish launching. |
-| Nothing at all appears on first launch | The app opens its panel once on first run — that is deliberate (§4.4). If it did not, check **Diagnostics…**. |
+| No menu-bar icon (Run at Startup ON) | Open **Diagnostics…** (§5). If the status item reports a width of 0 the icon failed to render; if it reports "MISSING" the app did not finish creating it. |
+| No menu-bar icon (Run at Startup OFF) | Expected — the default mode has no menu-bar icon. Turn **Run at Startup** ON (§6.1) to switch modes. |
+| No menu-bar icon even in power-user mode | Check **System Settings → Menu Bar → Rosetta Stone → Allow in the Menu Bar** — macOS 26 Tahoe and later let you hide a third-party status item. (ถ้าไอคอนไม่โผล่ ไปที่ System Settings → Menu Bar → หา Rosetta Stone → เปิดสวิตช์ Allow in the Menu Bar.) **Diagnostics…** also reports whether AppKit considers the item visible at all. |
+| Nothing at all appears at launch | The default mode opens the panel at launch (§4.4). If it did not, check **Diagnostics…**. |
 | App does not start at login | Toggle **Run at Startup** off, then on again, then log out and back in. **Diagnostics…** shows whether the login item is installed and whether it is stale. |
-| A Shortcut did nothing | Confirm the app is allowed to run at all (§4). Actions that are already running in the background perform silently — see §9.7. |
+| A Shortcut did nothing | URL actions require **Run at Startup ON** (§9). With the toggle off, the panel opens and says so. In power-user mode, actions perform silently once running — see §9.7. |
+| Gatekeeper did not switch off on macOS 15+ | On Sequoia/Tahoe you must also choose **Anywhere** in System Settings; the app opens the pane and reminds you (§6.2). |
 | Password prompt never appears | Check that a previous `osascript` dialog is not hidden behind another window. Only one privileged action runs at a time. |
 | "Operation not permitted" | You cancelled the prompt, or the command needs root and did not get it. Retry and complete the password prompt. |
 | Rosetta 2 install fails | You need an internet connection. On macOS 11.0–11.2 the component is not bundled; update to 11.3+ first. |
-| Auto Boot toggle is greyed | You are on Apple Silicon — this setting does not exist there. |
+| Auto Boot toggle is greyed | You are on Apple Silicon — M-series firmware owns auto-boot and its NVRAM is reset on every cold boot, so the setting cannot be changed by the user. Hovering the row says so (§6.4). |
 | Gatekeeper toggle keeps flipping back | Your Mac is managed by an organisation profile. That profile wins. |
 | Finder vanished | It restarted after toggling Hidden Files. It comes back on its own within a second. |
 

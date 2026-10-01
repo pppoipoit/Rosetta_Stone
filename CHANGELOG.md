@@ -12,6 +12,122 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 The first working build. Application code, the XcodeGen project specification and the CI
 pipeline now exist and both matrix legs build green on GitHub Actions.
 
+### Phase 6 — two-mode intent + auditor fixes
+
+**The app now has two modes, chosen by the Run at Startup toggle** (the owner-clarified intent).
+OFF (the default) is a normal windowed app: panel at launch, Dock icon, no menu-bar icon, URL
+actions refused. ON is the power-user menu-bar gadget: hidden launch, no Dock icon, menu-bar icon
+always visible, **left-click toggles Gatekeeper directly**, **right-click opens the full menu**,
+and all seven `rosettastone://` actions work. The switch flips the running process between the
+two postures instantly, with no relaunch — turning OFF removes the login item, removes the
+menu-bar icon in-process and restores the normal app.
+
+#### Added
+
+- **`AppMode`** (`Models/AppMode.swift`) — the two postures (`normal`, `menuBarGadget`) and their
+  launch resolution: `--menu-bar-only` → gadget; LaunchAgent plist exists → gadget; otherwise
+  normal. A manual double-click while the toggle is ON also opens hidden as a gadget.
+- **`GatekeeperPolicy`** (`Services/GatekeeperPolicy.swift`) — the macOS 15+ two-step rule, the
+  System Settings deep link, and the confirmation copy (Thai, owner-specified).
+- **Live mode switching.** `AppDelegate.apply(_:)` observes `runAtStartup` and flips the running
+  process: ON → `.accessory`, status item installed, Dock icon gone; OFF → `.regular`, status
+  item removed **in-process**, panel brought forward.
+- **Left-click on the menu-bar icon toggles Gatekeeper directly**; **right-click (or
+  Control-click)** opens the full menu, which now also carries a Toggle Gatekeeper item and a
+  "Left-click toggles Gatekeeper" hint.
+- **Status-item tooltip** stating Gatekeeper's current state and what a left-click will do.
+- **`Diagnostics…` link in the panel footer** — mode A has no menu-bar icon, so this is the only
+  route to the report there.
+- **`applicationShouldHandleReopen`** — clicking the Dock icon in mode A reopens the panel.
+
+#### Changed
+
+- **The window is now built in both modes** (gadget mode needs it for Open Main Window), and mode
+  A sets `NSApp.setActivationPolicy(.regular)` and shows it at launch; mode B keeps `.accessory`
+  and stays hidden at launch.
+- **`StartupManager` no longer calls `launchctl`.** `install()` only writes the plist —
+  bootstrapping the `RunAtLoad` job would launch a second instance immediately — and `remove()`
+  only deletes it: `bootout` would terminate the very process performing the removal when it was
+  started by that job at login.
+- **URL actions are gated to gadget mode.** In mode A a recognised action is refused with a
+  footer explanation instead of executing; unknown URLs stay silent in every mode.
+- **The first-run flag is gone** (`hasLaunchedOnce` and its window): mode A shows the panel on
+  every launch, so there is nothing to remember.
+- Diagnostics reports Launch mode and the `--menu-bar-only` flag; the stale first-run field is
+  gone. `docs/` updated throughout (README; FEATURES §1/§2/§9; ARCHITECTURE §1/§2/§3;
+  USER-GUIDE §1/§3/§5/§6/§8/§9/§11).
+
+#### Fixed
+
+- **Gatekeeper on macOS 15 Sequoia, 26 Tahoe and 27 Golden Gate is a two-step procedure.**
+  `spctl --master-disable` alone no longer flips the user-visible switch, so after the command
+  succeeds the app opens System Settings → Privacy & Security and shows the confirmation message
+  `กรุณาเลือก 'Anywhere' ใน System Settings เพื่อยืนยันการปิด Gatekeeper`. The version rule
+  (`majorVersion >= 15`) lives in `GatekeeperPolicy`, and every entry point — switch, right-click
+  menu, left-click direct toggle, URL action — shares one write path
+  (`FeatureCoordinator.writeGatekeeper(bypassed:)`), so the second step cannot be skipped on one
+  of them. Re-enabling Gatekeeper stays a single step on every OS version.
+
+### Phase 6.1 — auditor round 2 (Auto Boot lock, URL-queue ceiling, toast, doc sync)
+
+#### Added
+
+- **`StatusItemToast`** (`Views/MenuBar/StatusItemToast.swift`) — a borderless, non-activating HUD
+  under the status item. The left-click Gatekeeper toggle stays silent (no dropdown, no window, no
+  panel) and the toast is the only feedback: “Gatekeeper: waiting for authorization…” immediately,
+  then the outcome — “Gatekeeper is bypassed.” / “Gatekeeper is active.” / the failure text — taken
+  from the *state re-read*, never from the optimistic request. A dismissed password prompt is
+  silent.
+- **`TooltipHost`** (`Views/Main/Components.swift`) — an AppKit-backed tooltip for SwiftUI content.
+  SwiftUI’s `.help(_:)` is macOS 11+ and the floor here is 10.15, so the tooltip is attached to a
+  real `NSView`. The locked Auto Boot row now shows the owner-specified **"Apple Silicon ไม่รองรับ"**.
+- **`FeatureAvailability.tooltip`** — a lock can carry its own short hover copy, with `lockReason`
+  as the fallback.
+- **`AppDelegate.enqueue(_:)` with a hard ceiling** — `maxPendingURLs = 10`, oldest dropped.
+- **`MenuBarController.statusItemVisibility`** plus two new Diagnostics rows (“Status item visible”
+  and “If the icon is missing”) covering the macOS 26+ *System Settings → Menu Bar → Rosetta Stone →
+  Allow in the Menu Bar* case. There is no public API for that switch, so the report carries both
+  AppKit’s answer and the path to check.
+- **`LICENSE`** — MIT, which the badge and the README’s licence section always claimed.
+
+#### Changed
+
+- **Auto Boot writes `%03`, not `%01`.** `%03` is the Intel default for “auto boot on”. The reader
+  now accepts `%03` *and* the legacy `%01` as enabled, so an older firmware reporting `%01` is no
+  longer read as OFF and then “fixed” by the user.
+- **The Apple Silicon Auto Boot lock explains itself**: the row is disabled with a padlock as before,
+  *and* says that M-series firmware owns the setting while its NVRAM is reset on every cold boot —
+  auto-boot cannot be modified by the user at all.
+- **The right-click menu is rebuilt to the owner’s list**: Open Main Window, Toggle Hidden Files,
+  Flush DNS, Rebuild Spotlight, **Clear System Cache… (confirmed)**, Diagnostics… (⌘D), Quit (⌘Q).
+  The duplicate *Toggle Gatekeeper* item is gone — the left click is that action now.
+- **One warning constant for Clear System Cache** (`FeatureID.clearSystemCacheWarning`) shared by
+  the panel sheet, the status-item menu and the URL-scheme confirmation, opening with the
+  owner-specified Thai line **“⚠️ การล้าง System Cache อาจทำให้บางแอปช้าลงชั่วคราว”**. The feature
+  is retained deliberately — the fix for “this is risky” is that it is never quiet about it, not
+  that it disappears.
+- **The Gatekeeper version rule moved to `SystemCommands`** as
+  `gatekeeperDisableRequiresSystemSettingsConfirmation(majorVersion:)`; `GatekeeperPolicy` now owns
+  only the deep link and the instruction copy.
+- **Docs synced with the implementation.** ARCHITECTURE’s scaffolding note (“no Swift sources exist
+  yet”) is gone, and every diagram, table and layering rule names the real types (`SystemCommands`,
+  `FeatureCoordinator`, `CPUArchitecture`, `StartupManager`, `SystemStateReader`, `MenuBarController`,
+  `ContentView`). FEATURES §1/§2/§4/§8/§9 cover the menu + toast, the two-step rule, `%03`, the cache
+  warning and the 10-entry queue ceiling. USER-GUIDE gains §4.5 (first-run Gatekeeper vs the
+  Gatekeeper toggle) and updates §5/§6.4/§6.6/§11. DECISIONS no longer points at a
+  `Services/Privileges/PrivilegeEscalator` file that does not exist.
+
+#### Fixed
+
+- **The cold-start URL queue is bounded and cannot re-enter.** It is a plain array, drained exactly
+  once after the presenter is built, with no `DispatchQueue.main.async` re-dispatch anywhere on that
+  path — so a URL can neither be lost nor spin the drain — and capped at 10 entries, oldest dropped,
+  with the overflow logged.
+- **The README no longer advertises tool versions the project does not use.** It claimed “Xcode 12.5
+  or newer” and carried a “Swift 5.9+” badge while `project.yml` pins `SWIFT_VERSION 5.0`; it now
+  states Xcode 15+, XcodeGen 2.35+ and the missing `xcodegen generate` step, and the project-layout
+  tree matches the real folders (there is no `Services/Privileges/` or `Services/System/`).
+
 ### Fixed
 
 Hotfix for a macOS 26 Tahoe report: **the process ran, but no window and no menu-bar item

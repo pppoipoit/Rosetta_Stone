@@ -1,13 +1,13 @@
 # Architecture
 
-Rosetta Stone is a single-process, single-window-plus-menu-bar macOS agent application. This
-document describes the process model, the four principal runtime flows, and the design constraints
-that make those flows possible on a macOS 10.15 deployment floor.
+Rosetta Stone is a single-process, single-window-plus-menu-bar macOS application. This document
+describes the process model, the principal runtime flows, and the design constraints that make
+those flows possible on a macOS 10.15 deployment floor.
 
-> **Phase note.** This document is written during the scaffolding phase. It specifies the intended
-> architecture; no Swift sources exist yet. Types named here (e.g. `CommandRunner`,
-> `PrivilegeEscalator`, `FeatureCoordinator`) are the contracts the implementation phase must
-> satisfy.
+> **Type names below are the real ones.** The implementation is in `RosettaStone/`; the tables and
+> diagrams name the actual Swift types — `SystemCommands`, `FeatureCoordinator`, `MenuBarController`,
+> `CPUArchitecture`, `StartupManager`, `SystemStateReader`, `URLActionRouter`, `AppMode`,
+> `GatekeeperPolicy`, `Trace` — not the scaffolding-era placeholders.
 
 ---
 
@@ -17,42 +17,61 @@ Rosetta Stone is one app process with two user-facing surfaces:
 
 | Surface | Implementation | Visible as |
 |---------|----------------|------------|
-| Menu-bar item | AppKit `NSStatusItem` | A status-bar glyph, always present while running |
-| Main window | SwiftUI view hosted in an `NSWindow` | The feature panel, shown on demand |
+| Main window | SwiftUI view hosted in an `NSWindow` | The feature panel — always built, shown on demand |
+| Menu-bar item | AppKit `NSStatusItem` | A status-bar glyph, present only in mode B |
 
-### `LSUIElement = true`
+### Two modes, one process
 
-`Info.plist` sets `LSUIElement` to `true`, which makes the process an **agent app**:
+The **Run at Startup** toggle is the app's posture switch (`Models/AppMode.swift`):
+
+| Mode | Trigger | Window at launch | Dock icon | Menu-bar icon | URL actions |
+|------|---------|------------------|-----------|---------------|-------------|
+| **A — normal app** (default) | No LaunchAgent plist and no `--menu-bar-only` | Shown | Yes (`.regular`) | None | Refused |
+| **B — menu-bar gadget** | LaunchAgent plist exists, or `--menu-bar-only` | Hidden | No (`.accessory`) | Always | All seven work |
+
+The mode is re-derived from `FeatureCoordinator.runAtStartup` after every operation, so
+`AppDelegate.apply(_:)` flips the running process between the two postures with **no relaunch**:
+
+- **OFF → ON:** install the login item, install the status item, drop to `.accessory` (the Dock
+  icon disappears). The panel the user is looking at stays open; the *next* launch is hidden.
+- **ON → OFF:** delete the login item, remove the status item **in-process** ("kill the
+  menu-bar icon"), restore `.regular` and bring the panel forward.
+
+Removal must happen in-process: `launchctl bootout` would terminate the very process performing
+it, because in mode B that process was started by the LaunchAgent (§2).
+
+### `LSUIElement = true` and the dynamic activation policy
+
+`Info.plist` sets `LSUIElement` to `true`, which makes the process an **agent app by default**:
 
 | Consequence | Detail |
 |-------------|--------|
-| No Dock icon | The app never appears in the Dock or the ⌘-Tab switcher |
-| No app menu | No standard menu bar; the app supplies its own status-item menu |
-| Activation policy | `NSApp.setActivationPolicy(.accessory)` is the runtime equivalent and is set defensively in code as well |
-| Startup mode | The app launches, shows **no window**, and waits in the menu bar |
+| No Dock icon | The process cannot leak a Dock tile by accident — the bulletproof half of mode B |
+| No app menu | No standard menu bar; mode B supplies its own status-item menu |
+| Activation policy | Mode B keeps `.accessory`; mode A calls `NSApp.setActivationPolicy(.regular)` at launch, which is what gives the Dock icon back |
 
-The app deliberately has **two launch postures**:
+### Mode B interaction contract
 
-| Posture | Trigger | Window | Menu-bar icon |
-|---------|---------|--------|---------------|
-| Background | Login item / `LaunchAgent`, or `LSUIElement` launch | Hidden | Visible |
-| Interactive | `open rosettastone://open-app`, Dock/Launch Services activation, or a click on the status item | Visible + focused | Visible |
-
-Switching from background to interactive **activates** the existing process rather than launching a
-second copy. This is the central design problem the architecture must solve.
+| Gesture | Result |
+|---------|--------|
+| **Left-click** the status item | **Toggle Gatekeeper directly** — no dropdown, no window; the macOS password prompt is the only interruption, and a toast (`StatusItemToast`) reports the outcome |
+| **Right-click / Control-click** the status item | The full menu: Open Main Window, Toggle Hidden Files, Flush DNS, Rebuild Spotlight, Clear System Cache… (confirmed), Diagnostics… (⌘D), Quit (⌘Q) |
+| Dock icon / reopen (mode A) | `applicationShouldHandleReopen` shows the panel |
+| `rosettastone://…` (mode B) | Routed to the coordinator — §3 |
+| Window close (either mode) | The process keeps running; `applicationShouldTerminateAfterLastWindowClosed` is `false` |
 
 ### Process diagram
 
 ```mermaid
 graph TB
-    subgraph Process["Rosetta Stone process (LSUIElement = true)"]
+    subgraph Process["Rosetta Stone process (AppMode: normal | menuBarGadget)"]
         App["AppDelegate<br/>(NSApplicationDelegate)"]
         Status["NSStatusItem<br/>menu-bar resident"]
-        Win["NSWindow + SwiftUI MainView"]
+        Win["NSWindow + SwiftUI ContentView"]
         Coord["FeatureCoordinator<br/>state + serial execution queue"]
-        Priv["PrivilegeEscalator<br/>osascript admin bridge"]
-        Runner["CommandRunner<br/>/bin/sh process spawn"]
-        CPU["CPUDetector<br/>uname -m"]
+        Priv["SystemCommands<br/>osascript admin bridge"]
+        Runner["SystemCommands<br/>/bin/sh process spawn"]
+        CPU["CPUArchitecture<br/>uname -m"]
 
         App --> Status
         App --> Win
@@ -103,16 +122,27 @@ status-bar items. A daemon would run in a non-GUI context and could not.
 | `ProcessType` | `Interactive` | Allows UI / status-bar presentation |
 | `LimitLoadToSessionType` | `Aqua` | Prevents launch in SSH / background sessions |
 
-### The `--menu-bar-only` argument
+### Mode resolution at launch
 
-The launch posture is the app's only interface, so it is passed explicitly rather than inferred.
-`AppDelegate.requestedMenuBarOnly()` reads the flag at startup and the app then **skips window
-creation entirely** — no panel, no first-run window, no sheet. The status item and its dropdown
-are the whole UI.
+`AppMode.resolve(menuBarOnlyArgument:launchAgentInstalled:)` reads two signals, in order:
 
-This is what makes the "Run at Startup" requirement hold literally: with the toggle ON, the app
-lives as a menu-bar gadget only. A plist written by an older build lacks the flag; **Diagnostics…**
-reports that state, and toggling the switch off → on regenerates the plist.
+1. **`--menu-bar-only`** (written by this plist) → mode B, unconditionally. The login launch
+   never depends on a second read of the plist.
+2. **The plist exists** → mode B. This is what makes a manual double-click while the toggle is
+   ON behave exactly like the login launch: hidden window, menu-bar icon, no Dock icon.
+3. Otherwise → mode A.
+
+There is no separate "interactive launch" posture any more: the panel is shown on demand in both
+modes (`Open Main Window`, `rosettastone://open-app`, or a reopen event), and a mode B launch
+never shows a window as a side effect. A plist written by an older build lacks the flag but still
+resolves to mode B through its existence; **Diagnostics…** flags it as an older-build item.
+
+### Why no `launchctl` calls
+
+| Call | Why it is not used |
+|------|--------------------|
+| `launchctl bootstrap` / `load` at install | The job is `RunAtLoad`, so loading it would start a **second instance immediately** — alongside the one performing the install. The running process *is* the gadget; the file only has to exist for launchd, which loads every plist in `~/Library/LaunchAgents` at the next login by itself. |
+| `launchctl bootout` / `unload` at removal | It terminates a running job. The at-login instance is the one performing the removal, so this would kill the app mid-operation instead of letting it remove its menu-bar icon and return to normal mode. Deleting the plist is sufficient; the loaded job cannot restart the app (no `KeepAlive`) and is not loaded again at the next login. |
 
 ### Enable sequence
 
@@ -120,10 +150,10 @@ reports that state, and toggling the switch off → on regenerates the plist.
 sequenceDiagram
     autonumber
     actor U as User
-    participant UI as MainView (Toggle ON)
-    participant P as PrivilegeEscalator
+    participant UI as ContentView (Toggle ON)
+    participant P as SystemCommands
     participant FS as FileManager
-    participant LC as launchd
+    participant AD as AppDelegate
 
     U->>UI: Toggle "Run at Startup" ON
     UI->>P: request(launchAgentInstall)
@@ -131,14 +161,15 @@ sequenceDiagram
     alt User cancels
         U-->>P: cancel
         P-->>UI: .cancelled
-        UI->>UI: revert toggle to previous state
+        P-->>UI: mode unchanged (still A)
     else User authenticates
         U-->>P: credentials
-        P->>FS: write com.rosettastone.helper.plist (RunAtLoad)
-        P->>LC: launchctl load ~/Library/LaunchAgents/com.rosettastone.helper.plist (admin)
-        LC-->>P: exit 0
+        P->>FS: write com.rosettastone.helper.plist (RunAtLoad, --menu-bar-only)
+        Note over P,FS: No launchctl call — loading the job now<br/>would start a second instance (RunAtLoad).
         P-->>UI: .success
-        UI->>UI: toggle = ON
+        UI->>AD: runAtStartup publishes true
+        AD->>AD: apply(.menuBarGadget) → setActivationPolicy(.accessory)
+        AD->>UI: setGadgetMode(true) → status item installed
     end
 ```
 
@@ -148,24 +179,26 @@ sequenceDiagram
 sequenceDiagram
     autonumber
     actor U as User
-    participant UI as MainView (Toggle OFF)
-    participant P as PrivilegeEscalator
-    participant LC as launchd
+    participant UI as ContentView (Toggle OFF)
+    participant P as SystemCommands
     participant FS as FileManager
+    participant AD as AppDelegate
 
     U->>UI: Toggle "Run at Startup" OFF
     UI->>P: request(launchAgentRemove)
     P->>U: macOS Authorization prompt (admin)
     alt User authenticates
         U-->>P: credentials
-        P->>LC: launchctl unload (admin) — tolerate "not loaded"
-        P->>FS: remove com.rosettastone.helper.plist
+        P->>FS: rm -f com.rosettastone.helper.plist
+        Note over P,FS: No launchctl bootout — it would terminate<br/>this very process when it was started at login.
         P-->>UI: .success
-        UI->>UI: toggle = OFF
+        UI->>AD: runAtStartup publishes false
+        AD->>AD: apply(.normal) → setActivationPolicy(.regular)
+        AD->>UI: setGadgetMode(false) → status item removed, panel shown
     else User cancels
         U-->>P: cancel
         P-->>UI: .cancelled
-        UI->>UI: revert toggle to ON
+        P-->>UI: mode unchanged (still B)
     end
 ```
 
@@ -176,21 +209,24 @@ sequenceDiagram
     autonumber
     participant LD as launchd
     participant AP as RosettaStone.app
-    participant CPU as CPUDetector
+    participant CPU as CPUArchitecture
     participant ST as NSStatusItem
     participant U as User
     participant W as NSWindow
 
-    LD->>AP: launch job com.rosettastone.helper at login
+    LD->>AP: launch job com.rosettastone.helper at login (--menu-bar-only)
+    AP->>AP: AppMode.resolve → .menuBarGadget
     AP->>AP: setActivationPolicy(.accessory)
     AP->>CPU: detectArchitecture()
     CPU-->>AP: arm64 or x86_64
     AP->>AP: read all feature states (unprivileged reads)
     AP->>ST: install status item
-    Note over AP,W: Startup mode — NO window is shown.<br/>The app waits silently in the menu bar.
-    U->>ST: click the status-item glyph
-    ST->>AP: statusItemAction
-    AP->>W: orderFront + activate
+    Note over AP,W: Mode B launch — NO window is shown.<br/>The app waits silently in the menu bar.
+    U->>ST: LEFT-click the status item (toggle Gatekeeper)
+    ST->>U: macOS Authorization prompt (admin) + toast
+    U->>ST: RIGHT-click the status item
+    ST->>AP: presentMenu()
+    AP->>W: Open Main Window → orderFront + activate
     W-->>U: feature panel visible
 ```
 
@@ -219,6 +255,21 @@ login behaviour, and exposing them to an untrusted URL caller without an in-app 
 would be unsafe. Feature 8 (`clear-cache`) *is* exposed but retains its confirmation dialog even
 when URL-driven.
 
+### Mode gate
+
+URL actions are part of **mode B**. In mode A (Run at Startup OFF) the app is not running in the
+background; a URL that arrives anyway is refused, the panel is shown, and the footer explains
+that URL actions require Run at Startup ON. Nothing is silently performed, and unknown/malformed
+URLs still raise nothing at all.
+
+### Cold-start queue
+
+URLs that arrive before the presenter exists are held in a plain array — `pendingURLs`, ceiling
+**10** entries, oldest dropped (`AppDelegate.enqueue(_:)`). It is drained exactly once, by
+`drainPendingURLs()`, after `applicationDidFinishLaunching` has built the controller. There is no
+re-dispatch and no `DispatchQueue.main.async` hop on that path, which is what makes both failure
+modes impossible: a URL that can be lost, and a drain that can re-enter itself.
+
 ### Flow
 
 ```mermaid
@@ -232,10 +283,14 @@ sequenceDiagram
     participant U as User
 
     C->>LS: open "rosettastone://flush-dns"
-    alt App already running (background posture)
+    alt Mode A (Run at Startup OFF)
+        LS->>AD: launch/activate + deliver URL
+        AD-->>U: refused — panel opens with a footer explanation
+        Note over AD: No privileged action is ever started from a URL in mode A.
+    else Mode B, app already running (background posture)
         LS->>AD: application(_:open: URLs:) — same process, no relaunch
-    else App not running
-        LS->>AD: launch + deliver URL (LSUIElement: no window shown)
+    else Mode B, app not running
+        LS->>AD: launch + deliver URL (no window shown)
     end
     AD->>H: route(URL)
     H->>H: validate scheme + host against the action table
@@ -259,14 +314,17 @@ sequenceDiagram
 
 ### Single-instance guarantee
 
-Because `LSUIElement` apps have no Dock icon, the usual "click the Dock icon to focus an existing
-instance" affordance does not exist. The URL-scheme handler is therefore also the app's
-**activation** path. Two rules follow:
+In mode B the app has no Dock icon, so the usual "click the Dock icon to focus an existing
+instance" affordance does not exist; the URL-scheme handler is therefore also the app's
+**activation** path. In mode A the Dock icon exists and `applicationShouldHandleReopen` owns
+reactivation. Three rules follow:
 
 1. Never `terminate`-and-relaunch to handle a URL. Deliver it to the running instance.
-2. On a cold start triggered by a URL, do **not** show the window as a side effect — the caller
-   asked for an *action*, not for a window. Only `rosettastone://open-app` (or a click on the
-   status item) shows the panel.
+2. On a cold start triggered by a URL in mode B, do **not** show the window as a side effect —
+   the caller asked for an *action*, not for a window. Only `rosettastone://open-app` (or a
+   click/activation of the app) shows the panel.
+3. The LaunchAgent install never bootstraps the job, precisely so a mode-B install cannot spawn
+   a second instance on the spot (§2).
 
 ### URL parsing notes
 
@@ -318,7 +376,7 @@ interpolate raw user input, runtime-discovered file names, or URL parameters.
 
 | # | Feature | Elevation | Why |
 |---|---------|-----------|-----|
-| 1 | Run at Startup | **Yes** (admin) | `launchctl` in the user domain + plist write outside a sandboxed context |
+| 1 | Run at Startup | **Yes** (admin) | The plist is written by a root shell so the install cannot be blocked by a read-only or sandboxed context; no `launchctl` call is made (§2) |
 | 2 | Gatekeeper | **Yes** (admin) | `spctl --master-disable` requires root |
 | 3 | Hidden Files | No | `defaults write com.apple.finder` and `killall Finder` work as the user |
 | 4 | Auto Boot | **Yes** (admin) | `nvram` is root-only |
@@ -380,7 +438,7 @@ uname -m
 
 ```mermaid
 flowchart TD
-    A["App launch"] --> B["CommandRunner.run: /usr/bin/uname -m"]
+    A["App launch"] --> B["SystemCommands.run: /usr/bin/uname -m"]
     B --> C{"exit status 0?"}
     C -- no --> D["CPUArchitecture.unknown"]
     C -- yes --> E{"stdout"}
@@ -420,24 +478,25 @@ flowchart TD
 
 | Path | Responsibility |
 |------|----------------|
-| `RosettaStone/App/` | `App` entry point, `AppDelegate`, URL-scheme entry, status-item setup |
-| `RosettaStone/Models/` | `FeatureID`, `CPUArchitecture`, `FeatureState`, `CommandResult` |
-| `RosettaStone/Services/System/` | `CommandRunner`, `CPUDetector`, `LaunchAgentService`, per-feature services |
-| `RosettaStone/Services/Privileges/` | `PrivilegeEscalator` — the single choke point for `osascript` elevation |
-| `RosettaStone/Views/Main/` | SwiftUI main window: toggle rows, Rosetta row, Quick Tools grid |
-| `RosettaStone/Views/MenuBar/` | `NSStatusItem` view and its popover/menu |
+| `RosettaStone/App/` | `main.swift` (both entry points), `RosettaStoneApp`, `AppDelegate` — mode resolution, URL-scheme entry, reopen handling, live mode switching |
+| `RosettaStone/Models/` | `FeatureID` + `FeatureAvailability` (row copy, CPU gating, clear-cache warning), `AppMode`, `CommandResult` / `ProcessResult` |
+| `RosettaStone/Services/` | `SystemCommands` (the only place that spawns processes or elevates, plus the Gatekeeper version rule), `FeatureCoordinator` (+ `FeatureCoordinator+Actions`), `StartupManager`, `SystemStateReader`, `CPUArchitecture`, `URLActionRouter`, `GatekeeperPolicy`, `Trace` |
+| `RosettaStone/Views/Main/` | `ContentView` (toggle rows, Rosetta row, Quick Tools grid, footer), `Components`, `Theme` — including `TooltipHost`, the AppKit tooltip used by locked rows |
+| `RosettaStone/Views/MenuBar/` | `MenuBarController` (status item, dropdown menu, panel window), `StatusItemToast`, `DiagnosticsPanel` |
 | `RosettaStone/Support/` | `Info.plist`, `RosettaStone.entitlements` |
 
 ### Layering rules
 
 1. **Views never spawn processes.** A view calls a service; it never touches `Process` or
    `NSAppleScript`.
-2. **Only `PrivilegeEscalator` may call `osascript`.** Elevation is centralised so it can be
-   audited, rate-limited, and serialised in one place.
-3. **Only `CommandRunner` spawns processes.** It is the single place where `PATH`, working
-   directory, timeouts, and output truncation are defined.
+2. **Only `SystemCommands.runAsAdmin(_:timeout:)` may call `osascript`.** Elevation is
+   centralised so it can be audited, rate-limited, and serialised in one place.
+3. **Only `SystemCommands` spawns processes** (`run`, `shell`, `runShell`). It is the single
+   place where `PATH`, working directory, timeouts, and output truncation are defined.
 4. **Every service exposes read and write separately**, and reads must be unprivileged.
-5. **Services never touch UI state**; results flow back through `FeatureCoordinator`.
+5. **Services never touch UI state.** Results flow back through `FeatureCoordinator`, and
+   anything the UI must present — the macOS 15+ Gatekeeper confirmation — crosses as a closure
+   hook (`onGatekeeperNeedsConfirmation`) rather than an AppKit import.
 
 ---
 

@@ -22,10 +22,11 @@ import AppKit
 /// - `NSApplicationDelegateAdaptor` hands ownership of `NSApp` to `AppDelegate`, which
 ///   installs the `NSStatusItem` and the panel. Declaring it here is what wires the two
 ///   halves together.
-/// - `Settings` is used rather than `WindowGroup`: this is an `LSUIElement` agent with a
-///   manually managed panel. A `WindowGroup` would create a second, unmanaged window and
-///   a menu-bar "Show" item it does not want. `Settings` provides a legal, invisible
-///   scene that keeps the SwiftUI lifecycle satisfied.
+/// - `Settings` is used rather than `WindowGroup`: the app manages its own panel and
+///   switches between the normal-app and menu-bar-gadget postures at runtime. A
+///   `WindowGroup` would create a second, unmanaged window and a menu-bar "Show" item
+///   it does not want. `Settings` provides a legal, invisible scene that keeps the
+///   SwiftUI lifecycle satisfied.
 /// - `onOpenURL` is available from macOS 11, which is why the 10.15 path routes URLs
 ///   through `application(_:open:)` in the delegate instead.
 @available(macOS 11.0, *)

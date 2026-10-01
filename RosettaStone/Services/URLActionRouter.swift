@@ -3,8 +3,9 @@ import Foundation
 /// Validates and dispatches `rosettastone://` URLs.
 ///
 /// A custom URL scheme is used instead of App Intents, which requires macOS 13+ and
-/// would break the 10.15 floor (ADR-002). It is also the app's only activation path,
-/// because an `LSUIElement` agent has no Dock icon to click.
+/// would break the 10.15 floor (ADR-002). In mode B (Run at Startup ON) it is also the
+/// app's only activation path, because the menu-bar gadget has no Dock icon to click;
+/// in mode A the URLs are refused (see `AppDelegate.handle(urls:)`).
 ///
 /// ## Registered actions
 ///
@@ -66,6 +67,15 @@ protocol URLActionHandling: AnyObject {
 /// produce an alert the user did not ask for.
 enum URLActionRouter {
 
+    /// Shown when a URL action arrives in mode A (Run at Startup OFF).
+    ///
+    /// URL actions are the menu-bar gadget's surface. The normal app refuses them
+    /// explicitly — with one quiet footer message — rather than appearing to do nothing
+    /// or silently performing a privileged action.
+    static let normalModeRefusalMessage =
+        "URL actions (rosettastone://) work only when Run at Startup is ON — "
+        + "turn it on to switch to menu-bar gadget mode."
+
     /// Routes one URL. Must be called on the main thread.
     static func route(_ url: URL,
                       coordinator: FeatureCoordinator,
@@ -98,11 +108,11 @@ enum URLActionRouter {
             coordinator.installRosetta()
 
         case .clearCache:
-            // Feature 8 keeps its confirmation even when URL-driven.
+            // Feature 8 keeps its confirmation even when URL-driven — and the same Thai +
+            // English warning as the panel and the menu, from one constant.
             presenter.performDestructiveAction(
                 "Clear the system cache?",
-                message: "Everything inside /Library/Caches will be deleted. Open applications may "
-                    + "misbehave until they are restarted, and there is no way to undo this.",
+                message: FeatureID.clearSystemCacheWarning,
                 action: { coordinator.clearSystemCache() }
             )
         }

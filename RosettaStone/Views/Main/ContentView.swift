@@ -26,6 +26,12 @@ struct ContentView: View {
 
     @ObservedObject var coordinator: FeatureCoordinator
 
+    /// Opens the Diagnostics panel. Provided by `MenuBarController`.
+    ///
+    /// Mode A has no menu-bar icon, so this footer link is the only route to the
+    /// diagnostics report there; in mode B the same panel is also in the right-click menu.
+    let onShowDiagnostics: (() -> Void)?
+
     /// A pending confirmation, presented as a sheet.
     @State private var pendingConfirmation: ConfirmationRequest?
 
@@ -109,9 +115,19 @@ struct ContentView: View {
             if let status = coordinator.statusMessage {
                 StatusBanner(message: status)
             }
-            Text("Version \(MenuBarController.versionString)")
-                .font(.system(size: 10))
-                .foregroundColor(Theme.secondaryText.opacity(0.7))
+            HStack(spacing: 6) {
+                Text("Version \(MenuBarController.versionString)")
+                    .font(.system(size: 10))
+                    .foregroundColor(Theme.secondaryText.opacity(0.7))
+
+                Spacer(minLength: 0)
+
+                // Reachable in **both** modes: mode A has no menu-bar icon, so this is
+                // the only way to the diagnostics report there.
+                Button("Diagnostics…") { onShowDiagnostics?() }
+                    .buttonStyle(QuietLinkButtonStyle())
+                    .disabled(coordinator.isBusy)
+            }
         }
         .padding(.top, 12)
     }
@@ -145,11 +161,17 @@ struct ContentView: View {
             )
             RowSeparator()
 
-            // 4. Auto Boot — admin, Intel only. Disabled + lock on arm64.
-            toggleRow(
-                feature: .autoBoot,
-                isOn: Binding(get: { coordinator.autoBootEnabled ?? false },
-                              set: { confirmAutoBoot(enabled: $0) })
+            // 4. Auto Boot — admin, Intel only. Disabled + lock on Apple Silicon, where the
+            // firmware owns the variable and NVRAM is wiped on every cold boot. The row is
+            // wrapped in `TooltipHost` because a `.disabled(true)` row cannot explain itself:
+            // hovering shows "Apple Silicon ไม่รองรับ".
+            TooltipHost(
+                text: lockedTooltip(for: .autoBoot),
+                content: toggleRow(
+                    feature: .autoBoot,
+                    isOn: Binding(get: { coordinator.autoBootEnabled ?? false },
+                                  set: { confirmAutoBoot(enabled: $0) })
+                )
             )
             RowSeparator()
 
@@ -160,6 +182,14 @@ struct ContentView: View {
             // 6. Quick Tools
             quickTools
         }
+    }
+
+    /// Tooltip text for a row: the owner-specified copy when a lock carries one, else the
+    /// English lock reason. Empty for an interactive row, which therefore shows no tooltip.
+    private func lockedTooltip(for feature: FeatureID) -> String {
+        let availability = coordinator.availability(for: feature)
+        guard availability.isEnabled == false else { return "" }
+        return availability.tooltip ?? availability.lockReason ?? ""
     }
 
     /// A toggle row: title, one-line detail, and the pill switch.
@@ -386,11 +416,12 @@ struct ContentView: View {
     }
 
     /// Feature 8 — the highest-risk action in the app. Confirmation **and** auth prompt.
+    /// The warning copy is shared with the status-item menu and the URL scheme
+    /// (`FeatureID.clearSystemCacheWarning`) so the three can never disagree about the risk.
     private func confirmClearCache() {
         pendingConfirmation = ConfirmationRequest(
             title: "Clear the system cache?",
-            message: "Everything inside /Library/Caches will be deleted. Open applications may "
-                + "misbehave and need to be restarted, and there is no way to undo this.",
+            message: FeatureID.clearSystemCacheWarning,
             confirmTitle: "Clear Cache",
             isDestructive: true
         ) {

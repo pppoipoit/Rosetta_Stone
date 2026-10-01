@@ -321,7 +321,8 @@ The app must work on macOS 10.15, be distributed ad-hoc signed (ADR-003), and ne
 password itself.
 
 ### Decision
-Route every privileged command through a single `PrivilegeEscalator` that spawns:
+Route every privileged command through a single choke point — `SystemCommands.runAsAdmin(_:timeout:)` —
+which spawns:
 
 ```bash
 osascript -e 'do shell script "<command>" with administrator privileges'
@@ -348,7 +349,7 @@ would be a serious security anti-pattern.
 | No certificate or helper binary required. | Compatible with ad-hoc distribution. |
 | Works on macOS 10.15 → 27. | The `with administrator privileges` clause is stable across the whole range. |
 | Familiar UI. | Users recognise the system dialog and understand what it means. |
-| One auditable choke point. | All elevation lives in `Services/Privileges/PrivilegeEscalator`, reviewable in isolation. |
+| One auditable choke point. | All elevation lives in `Services/SystemCommands.swift`, reviewable in isolation. |
 
 **Negative**
 
@@ -357,7 +358,7 @@ would be a serious security anti-pattern.
 | A user prompt per privileged action. | Accepted — it is the correct security behaviour. State **reads** are unprivileged, so merely opening the window never prompts. |
 | The inner command is interpreted by `/bin/sh`. | Every interpolated value is single-quote escaped with `'\''`. No user input, URL parameter, or runtime-discovered filename is ever interpolated raw. |
 | AppleScript quoting (`"`, `\`) must be escaped before shell quoting. | Two-stage escaping is centralised in one function and unit-tested, rather than repeated per feature. |
-| `osascript` error `-128` on cancel must be distinguished from a real failure. | `PrivilegeEscalator` maps `-128` to `.cancelled`; the UI reverts silently with no error alert. |
+| `osascript` error `-128` on cancel must be distinguished from a real failure. | `SystemCommands` maps `-128` to `.cancelled`; the UI reverts silently with no error alert. |
 | No non-interactive operation is possible. | An automation still requires a human password prompt. Documented in [USER-GUIDE.md §9.7](USER-GUIDE.md#97-automation-notes). |
 
 ### Alternatives considered

@@ -1,6 +1,6 @@
 <h1 align="center">Rosetta Stone</h1>
 
-![CI Status](https://github.com/pppoipoit/Rosetta_Stone/actions/workflows/build-mac-dmg.yml/badge.svg) ![macOS 10.15 Catalina → 27 Golden Gate](https://img.shields.io/badge/macOS-10.15%20Catalina%20%E2%86%92%2027%20Golden%20Gate-0078d4?logo=apple) ![Swift 5.9+](https://img.shields.io/badge/Swift-5.9%2B-orange?logo=swift) ![Architecture arm64 | x86_64](https://img.shields.io/badge/Arch-arm64%20%7C%20x86__64-lightgrey?logo=apple) ![License MIT](https://img.shields.io/badge/License-MIT-green)
+![CI Status](https://github.com/pppoipoit/Rosetta_Stone/actions/workflows/build-mac-dmg.yml/badge.svg) ![macOS 10.15 Catalina → 27 Golden Gate](https://img.shields.io/badge/macOS-10.15%20Catalina%20%E2%86%92%2027%20Golden%20Gate-0078d4?logo=apple) ![Swift 5 language mode](https://img.shields.io/badge/Swift-5.0%20language%20mode-orange?logo=swift) ![Architecture arm64 | x86_64](https://img.shields.io/badge/Arch-arm64%20%7C%20x86__64-lightgrey?logo=apple) ![License MIT](https://img.shields.io/badge/License-MIT-green)
 
 <p align="center">
   <b>A native macOS utility for power-user system toggles.</b><br>
@@ -24,8 +24,11 @@ privilege prompting.
 Design constraints that shape everything:
 
 - **Zero onboarding / no account / no telemetry.** Nothing is uploaded. Nothing is tracked.
-- **Menu-bar resident.** The app is an `LSUIElement` agent: it lives in the menu bar and can
-  hide its window entirely, so it never occupies Dock space or interrupts focus.
+- **Two modes, one toggle.** *Run at Startup* **OFF** (the default) is a normal windowed app
+  with a Dock icon and no menu-bar icon. **ON** is the power-user mode: a hidden-window
+  `LSUIElement` menu-bar gadget — left-click toggles Gatekeeper, right-click opens the full
+  menu, and all seven URL actions work. Flipping the toggle switches posture live, with no
+  relaunch.
 - **Broad OS floor.** It must run on macOS 10.15, which rules out modern-only frameworks.
 
 ---
@@ -34,8 +37,8 @@ Design constraints that shape everything:
 
 | # | Feature | Control | Command | Admin? | Availability |
 |---|---------|---------|---------|--------|--------------|
-| 1 | Run at Startup | Toggle | `create` / `remove` `~/Library/LaunchAgents/com.rosettastone.helper.plist` | **Yes** (admin) | All |
-| 2 | Gatekeeper | Toggle | `spctl --master-disable` / `spctl --master-enable` | **Yes** (admin) | All |
+| 1 | Run at Startup | Toggle (mode switch) | `create` / `remove` `~/Library/LaunchAgents/com.rosettastone.helper.plist` | **Yes** (admin) | All |
+| 2 | Gatekeeper | Toggle | `spctl --master-disable` / `spctl --master-enable` (macOS 15+: confirm “Anywhere” in System Settings) | **Yes** (admin) | All |
 | 3 | Hidden Files | Toggle (ON = show) | `defaults write com.apple.finder AppleShowAllFiles YES/NO` + `killall Finder` | No | All |
 | 4 | Auto Boot | Toggle | `nvram AutoBoot=%03` / `nvram AutoBoot=%00` | **Yes** (admin) | Intel only; greyed + lock icon on Apple Silicon |
 | 5 | Rosetta 2 | Install button | `softwareupdate --install-rosetta --agree-to-license` | **Yes** (admin) | Apple Silicon only; greyed on Intel; installed-check via `/usr/libexec/oah/libRosettaRuntime` |
@@ -76,9 +79,11 @@ Full behavioural detail, per-feature command strings, and edge cases: **[docs/FE
 | Network | Only for the Rosetta 2 install; all other features are fully offline |
 | Runtime dependencies | None. System tools only: `spctl`, `nvram`, `mdutil`, `dscacheutil`, `defaults`, `killall`, `softwareupdate`. |
 
-**Feature 4 (Auto Boot)** is Intel-only and **Feature 5 (Rosetta 2)** is Apple-Silicon-only. The
-UI greys out the inapplicable row and shows a lock icon rather than hiding it, so the feature list
-stays visually stable across machines.
+**Feature 4 (Auto Boot)** is Intel-only (`nvram AutoBoot=%03` / `%00`) and **Feature 5 (Rosetta 2)**
+is Apple-Silicon-only. The UI greys out the inapplicable row and shows a lock icon rather than
+hiding it, so the feature list stays visually stable across machines; hovering a locked row
+explains why. On Apple Silicon the Auto Boot row is locked because M-series firmware owns the
+setting and NVRAM is reset on every cold boot — the tooltip reads *"Apple Silicon ไม่รองรับ"*.
 
 ---
 
@@ -99,10 +104,16 @@ stays visually stable across machines.
 > trust the download.
 > Full instructions: [docs/USER-GUIDE.md](docs/USER-GUIDE.md#first-launch).
 
-5. The app appears in the **menu bar** (a stone glyph), *not* the Dock — this is intentional.
-   Click the glyph to open the panel.
-6. Enable the **Run at Startup** toggle to install the login item so the menu-bar icon returns
-   after every reboot.
+5. The app opens as a **normal windowed app** with a Dock icon — the default mode. There is no
+   menu-bar icon yet, so use the **Diagnostics…** link in the panel footer if you need the
+   support report.
+6. Turn **Run at Startup** ON whenever you want the power-user mode: the per-user login item is
+   installed, the Dock icon disappears and a stone glyph appears in the menu bar.
+   **Left-click** the glyph to toggle Gatekeeper — no window, just the password prompt and a
+   small toast with the result; **right-click** it for the full menu (Open Main Window, Toggle
+   Hidden Files, Flush DNS, Rebuild Spotlight, Clear System Cache…, Diagnostics…, Quit).
+   Turning the toggle OFF removes the login item and the glyph, restores the Dock icon, and
+   makes the app ordinary again — live, with no relaunch.
 
 ---
 
@@ -113,7 +124,13 @@ git clone https://github.com/<owner>/Rosetta_Stone.git
 cd Rosetta_Stone
 ```
 
-**Requirements:** macOS 11+ host, Xcode 12.5 or newer.
+**Requirements:** macOS 11+ host, **Xcode 15 or newer**, and **XcodeGen 2.35+** (`brew install
+xcodegen`). The `.xcodeproj` is generated from `project.yml` and is deliberately not committed,
+so generate it first:
+
+```bash
+xcodegen generate
+```
 
 ### Xcode
 
@@ -163,6 +180,10 @@ For distribution, see [docs/CI-CD.md](docs/CI-CD.md) and the ad-hoc signing ADR 
 Rosetta Stone registers the custom URL scheme `rosettastone://`, which can be driven from Apple
 Shortcuts, Alfred, Raycast, or a shell script.
 
+> **Requires the power-user mode.** URL actions run only while **Run at Startup** is ON (the
+> menu-bar gadget). In the default mode the app is not running in the background, so the URLs
+> are refused and the panel explains why.
+
 | Action | URL |
 |--------|-----|
 | Open the app window | `rosettastone://open-app` |
@@ -199,7 +220,8 @@ Full wiring walkthrough: [docs/USER-GUIDE.md](docs/USER-GUIDE.md#5-apple-shortcu
 > - **Gatekeeper** (`spctl --master-disable`) (admin) turns off one of macOS's primary security
 >   mechanisms. It permits unsigned and unnotarized software to run without warning. Only
 >   disable it while you genuinely need to run an unsigned tool, and re-enable it immediately
->   afterwards.
+>   afterwards. On **macOS 15 Sequoia and later** the command alone is not enough: the app opens
+>   System Settings → Privacy & Security and asks you to choose **Anywhere** to confirm.
 > - **Clear System Cache** (`rm -rf /Library/Caches/*`) (admin) deletes files in a shared system
 >   location. Malformed caches can cause application instability, and some apps may need a
 >   restart to regenerate their caches.
@@ -233,19 +255,22 @@ Full wiring walkthrough: [docs/USER-GUIDE.md](docs/USER-GUIDE.md#5-apple-shortcu
 rosetta-stone/
 ├── .github/workflows/     CI pipeline (build-mac-dmg.yml)
 ├── docs/                  Specifications and manuals
-├── RosettaStone/          Swift sources (added in the implementation phase)
-│   ├── App/               App + AppDelegate entry points
-│   ├── Models/            Feature / CPU / toggle state models
+├── scripts/               Developer helper scripts (first-run.sh)
+├── RosettaStone/          Swift sources
+│   ├── App/               main.swift, RosettaStoneApp, AppDelegate
+│   ├── Models/            FeatureID, AppMode, CommandResult
 │   ├── Resources/         Assets.xcassets
-│   ├── Services/
-│   │   ├── Privileges/    osascript escalation layer
-│   │   └── System/        Command execution, LaunchAgent, CPU detection
-│   ├── Support/           Info.plist, entitlements
+│   ├── Services/          SystemCommands, FeatureCoordinator(+Actions), StartupManager,
+│   │                      SystemStateReader, CPUArchitecture, URLActionRouter,
+│   │                      GatekeeperPolicy, Trace
+│   ├── Support/           Info.plist, RosettaStone.entitlements
 │   └── Views/
-│       ├── Main/          Main window
-│       └── MenuBar/       NSStatusItem panel
-├── scripts/               Developer helper scripts
-└── assets/                Icons and screenshots
+│       ├── Main/          ContentView, Components, Theme
+│       └── MenuBar/       MenuBarController, StatusItemToast, DiagnosticsPanel
+├── project.yml            XcodeGen spec — the source of truth for the build
+├── CHANGELOG.md           Keep-a-Changelog history
+├── LICENSE                MIT
+└── README.md
 ```
 
 ---

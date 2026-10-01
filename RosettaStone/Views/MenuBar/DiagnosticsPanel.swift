@@ -18,12 +18,12 @@ import AppKit
 /// | CPU architecture | Explains a greyed-out Auto Boot / Rosetta row |
 /// | macOS version | Explains an SF Symbol that resolved differently |
 /// | Process ID | Ties the panel to the right process in Activity Monitor |
-/// | Activation policy | `.accessory` == no Dock icon, which surprises first-time users |
-/// | Launch posture | `--menu-bar-only` vs a normal launch explains a missing window |
+/// | Launch mode | Mode A (normal app) vs mode B (menu-bar gadget) — the Run at Startup posture |
+/// | Activation policy | `.accessory` == no Dock icon (mode B), `.regular` == Dock icon (mode A) |
 /// | Status item | The zero-width / missing-item diagnosis, directly |
+/// | Status item visible | Whether AppKit is actually drawing it — the macOS 26+ “Allow in the Menu Bar” case |
 /// | Icon source | Which link of the fallback chain actually won |
 /// | LaunchAgent | Installed yes/no — the "doesn't start at login" diagnosis |
-/// | First run flag | Whether `hasLaunchedOnce` has been recorded yet |
 ///
 /// Built with plain AppKit rather than SwiftUI so it needs no hosting view and cannot be
 /// the thing that fails to appear. The rows are selectable so the output can be copied
@@ -40,7 +40,7 @@ enum DiagnosticsPanel {
     private static func fields(from controller: MenuBarController) -> [Field] {
         let coordinator = controller.coordinator
         let startup = coordinator.startupManager
-        let defaults = UserDefaults.standard
+        let appDelegate = NSApp.delegate as? AppDelegate
 
         return [
             Field(label: "Version", value: MenuBarController.versionString),
@@ -49,23 +49,27 @@ enum DiagnosticsPanel {
             Field(label: "CPU architecture",
                   value: coordinator.architecture.displayName
                     + (coordinator.architecture.isRunningUnderTranslation ? " (translated)" : "")),
+            Field(label: "Launch mode",
+                  value: appDelegate?.mode.displayName
+                    ?? (controller.gadgetMode
+                        ? AppMode.menuBarGadget.displayName
+                        : AppMode.normal.displayName)),
+            Field(label: "--menu-bar-only flag",
+                  value: AppDelegate.requestedMenuBarOnly() ? "present" : "absent"),
             Field(label: "Activation policy",
                   value: NSApp.activationPolicy() == .accessory ? "accessory (no Dock icon)" : "regular"),
-            Field(label: "Launch posture",
-                  value: controller.menuBarOnly
-                    ? "menu-bar only (--menu-bar-only)"
-                    : "normal (window allowed)"),
             Field(label: "Status item", value: controller.statusItemState),
+            Field(label: "Status item visible",
+                  value: controller.statusItemVisibility),
+            Field(label: "If the icon is missing",
+                  value: "System Settings → Menu Bar → Rosetta Stone → Allow in the Menu Bar"),
             Field(label: "Icon source", value: controller.statusImageSource),
             Field(label: "LaunchAgent installed", value: startup.isInstalled() ? "Yes" : "No"),
             Field(label: "LaunchAgent path", value: startup.installedExecutablePath() ?? "—"),
             Field(label: "LaunchAgent menu-bar-only",
                   value: !startup.isInstalled() ? "—"
                     : (startup.installedPlistIsMenuBarOnly()
-                        ? "Yes" : "No (stale — re-toggle Run at Startup)")),
-            Field(label: "First run completed",
-                  value: defaults.object(forKey: AppDelegate.hasLaunchedOnceKey) == nil
-                    ? "No (never shown)" : "Yes"),
+                        ? "Yes" : "No (older build — re-toggle Run at Startup)")),
             Field(label: "Bundle path", value: Bundle.main.bundlePath)
         ]
     }
