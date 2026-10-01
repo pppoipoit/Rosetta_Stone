@@ -234,8 +234,12 @@ final class MenuBarController: NSObject {
     private func resolveStatusImage() -> ResolvedImage {
         // 3. SF Symbol. `NSImage(systemSymbolName:)` is macOS 11+, so it needs a guard
         //    against the 10.15 floor. It is a *preference*, never a requirement.
+        //    `accessibilityDescription:` is passed explicitly: it has a default in some
+        //    SDKs and is a required argument in others (Xcode 26 / macOS 26 SDK), and
+        //    naming it compiles against both.
         if #available(macOS 11.0, *) {
-            if let symbol = NSImage(systemSymbolName: "square.stack.3d.up.fill") {
+            if let symbol = NSImage(systemSymbolName: "square.stack.3d.up.fill",
+                                    accessibilityDescription: "Rosetta Stone") {
                 symbol.isTemplate = true
                 return ResolvedImage(image: symbol, source: "sf-symbol")
             }
