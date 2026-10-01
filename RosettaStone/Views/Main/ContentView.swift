@@ -7,11 +7,13 @@ import AppKit
 /// 1. Run at Startup · 2. Gatekeeper · 3. Hidden Files · 4. Auto Boot ·
 /// 5. Rosetta 2 · 6. Quick Tools (Spotlight / DNS / Cache)
 ///
-/// ## CPU gating
-/// Two rows are gated on the architecture detected by `uname -m`:
-/// - **Auto Boot** is disabled with a 🔒 on `arm64` — the `AutoBoot` NVRAM variable
-///   does not exist on Apple Silicon.
-/// - **Rosetta 2** is disabled with a 🔒 on `x86_64` — Rosetta is an Apple Silicon feature.
+/// ## Hardware gating
+/// Two rows are gated on the cached `MacProfile` (ADR-008):
+/// - **Auto Boot** is greyed with a 🔒 unless the machine is an **Intel MacBook** — Apple
+///   Silicon firmware owns the variable, and a desktop has no lid to open. The subtitle and
+///   the hover tooltip both come from `MacProfile.autoBootDisabledReason`.
+/// - **Rosetta 2** is greyed with a 🔒 on `x86_64` — Rosetta is an Apple Silicon feature.
+///   (Architectural only: `profile.cpuArchitecture`, never the form factor.)
 ///
 /// Both are **greyed out, never hidden**, so the panel looks the same on every machine and
 /// the padlock explains the absence instead of making the feature look missing.
@@ -83,13 +85,18 @@ struct ContentView: View {
         .padding(.horizontal, Theme.contentPadding)
     }
 
-    /// Centred title plus the detected architecture, so the locked rows have context.
+    /// Centred title plus the detected hardware, so the locked rows have context.
+    ///
+    /// The subtitle reads e.g. `macOS 15.4 · Intel · Laptop` — the architecture **and** the
+    /// form factor. The Auto Boot lock now depends on both, so an architecture-only caption
+    /// would be actively misleading on an Intel Mac mini, whose Auto Boot row is locked.
     private var header: some View {
         VStack(spacing: 4) {
             Text("Rosetta Stone")
                 .font(.system(size: 21, weight: .bold))
                 .foregroundColor(Theme.title)
-            Text("macOS \(ContentView.osVersionText) · \(coordinator.architecture.displayName)")
+            Text("macOS \(ContentView.osVersionText) · \(coordinator.architecture.displayName)"
+               + " · \(coordinator.profile.formFactor.displayName)")
                 .font(.system(size: 11))
                 .foregroundColor(Theme.secondaryText)
         }
@@ -161,10 +168,12 @@ struct ContentView: View {
             )
             RowSeparator()
 
-            // 4. Auto Boot — admin, Intel only. Disabled + lock on Apple Silicon, where the
-            // firmware owns the variable and NVRAM is wiped on every cold boot. The row is
-            // wrapped in `TooltipHost` because a `.disabled(true)` row cannot explain itself:
-            // hovering shows "Apple Silicon ไม่รองรับ".
+            // 4. Auto Boot — admin, **Intel MacBook only**. Greyed + 🔒 wherever the profile says the
+            // setting is meaningless: Apple Silicon (firmware owns `AutoBoot`, NVRAM reset
+            // every cold boot) and desktops (no lid). Both the subtitle and the hover tooltip
+            // come from `MacProfile.autoBootDisabledReason`, so a greyed row always explains
+            // itself. The row stays wrapped in `TooltipHost` because a `.disabled(true)` row
+            // cannot show a SwiftUI `.help(_:)` — that is macOS 11+ and this app is 10.15.
             TooltipHost(
                 text: lockedTooltip(for: .autoBoot),
                 content: toggleRow(
@@ -186,6 +195,10 @@ struct ContentView: View {
 
     /// Tooltip text for a row: the owner-specified copy when a lock carries one, else the
     /// English lock reason. Empty for an interactive row, which therefore shows no tooltip.
+    ///
+    /// For the Auto Boot row both the subtitle and this tooltip come from
+    /// `MacProfile.autoBootDisabledReason`, which is non-nil whenever the row is locked — so
+    /// the fallback to `lockReason` is belt-and-braces, never the path taken.
     private func lockedTooltip(for feature: FeatureID) -> String {
         let availability = coordinator.availability(for: feature)
         guard availability.isEnabled == false else { return "" }

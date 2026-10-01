@@ -94,24 +94,34 @@ extension FeatureID {
         }
     }
 
-    /// Drives the CPU-gated rows from the cached `uname -m` result.
+    /// Drives the hardware-gated rows from the cached profile (ADR-007 + ADR-008).
     ///
-    /// Fail-safe: an unrecognised architecture locks both CPU-gated rows rather than
-    /// guessing, because a wrongly-enabled `nvram` write is far worse than a greyed row.
-    func availability(on architecture: CPUArchitecture) -> FeatureAvailability {
+    /// Takes the whole `MacProfile` rather than a bare `CPUArchitecture` because Auto Boot
+    /// needs **both** answers — Intel **and** a lid — and passing only the architecture is
+    /// what let Intel desktops through in the first place.
+    ///
+    /// Fail-safe: an unrecognised architecture *or* model locks the Auto Boot row rather
+    /// than guessing, because a wrongly-enabled `nvram` write is far worse than a greyed row.
+    func availability(on profile: MacProfile) -> FeatureAvailability {
         switch self {
         case .autoBoot:
-            guard architecture.supportsAutoBoot else {
-                // Locked on Apple Silicon: M-series firmware owns `AutoBoot` and NVRAM is
-                // wiped on every cold boot, so the setting cannot be changed by the user.
-                // The tooltip is Thai by owner decision — `.disabled(true)` alone does not
-                // tell anyone *why* a row is dead.
-                return .locked("Auto Boot uses the firmware AutoBoot NVRAM variable, which does not exist on Apple Silicon.",
-                               tooltip: "Apple Silicon ไม่รองรับ")
+            guard profile.supportsAutoBoot else {
+                // Locked on Apple Silicon (M-series firmware owns `AutoBoot` and NVRAM is
+                // wiped on every cold boot) and on desktops (no lid to open, and on Intel
+                // firmware `nvram AutoBoot` is absent or inert).
+                //
+                // The reason string is Thai by owner decision — `.disabled(true)` alone does
+                // not tell anyone *why* a row is dead — and it is used for **both** the
+                // subtitle and the tooltip, so the greyed row explains itself inline and on
+                // hover. A lock with no reason is the one outcome this row contract forbids.
+                let reason = profile.autoBootDisabledReason
+                    ?? "Auto Boot is unavailable on this Mac."
+                return .locked(reason, tooltip: reason)
             }
             return .available
         case .rosetta2:
-            guard architecture.supportsRosettaInstall else {
+            // Still purely architectural: Rosetta 2 does not care whether there is a lid.
+            guard profile.cpuArchitecture.supportsRosettaInstall else {
                 return .locked("Rosetta 2 runs on Apple Silicon only — this Mac is Intel.")
             }
             return .available

@@ -317,17 +317,45 @@ reading it as OFF would invite the user to "fix" a setting that is already corre
 
 ### Availability
 
-| Platform | Supported | Notes |
-|----------|-----------|-------|
-| macOS 10.15+ on Intel | ✅ | T2 / T1 security chips and most iMacs/MacBook Pros expose `AutoBoot` |
-| macOS 10.15+ on Apple Silicon | ⛔ **Not supported** | M-series Macs boot from an internal volume only; the `AutoBoot` NVRAM variable does not exist, and **NVRAM is reset on every cold boot**, so auto-boot cannot be modified by the user at all. The row is **disabled with a lock icon**, and hovering it shows the tooltip *"Apple Silicon ไม่รองรับ"*. |
-| Intel Macs without the variable | ⚠️ Partial | `nvram AutoBoot` returns no output; the toggle shows OFF and writes are ignored by firmware |
+Auto Boot needs **two independent facts**, both from `MacProfile` (ADR-008):
+
+1. **Intel** — M-series firmware owns the `AutoBoot` variable and **NVRAM is reset on every
+   cold boot**, so it cannot be changed by the user at all.
+2. **A lid** — the behaviour is "power on when the lid is opened". An iMac, Mac mini,
+   Mac Studio or Mac Pro has none, and on Intel desktop firmware `nvram AutoBoot` is absent
+   or inert.
+
+| Machine | Supported | Notes |
+|---------|-----------|-------|
+| Intel MacBook / MacBook Air / MacBook Pro | ✅ | The only supported combination. T2/T1 firmware exposes `AutoBoot`. |
+| Apple Silicon MacBook | ⛔ **Not supported** | No NVRAM to write. Row **disabled with a lock icon**, subtitle and tooltip read **"Apple Silicon reset NVRAM ทุกครั้งที่ cold boot"**. |
+| Intel desktop (iMac, Mac mini, Mac Pro) | ⛔ **Not supported** | No lid. Row **disabled with a lock icon**, subtitle and tooltip read **"Desktop Mac ไม่มีฝาเปิด-ปิด"**. |
+| Apple Silicon desktop | ⛔ **Not supported** | Both reasons apply; the desktop reason is reported, since it is the more fundamental one. |
+| Unrecognised model / architecture | ⛔ **Fail-safe** | `system_profiler` slow, blocked by policy, or absent. Row locked with **"Unknown Mac model — Auto Boot is disabled to stay safe."** |
+
+The first four rows are the whole matrix: exactly **one** of the four combinations is
+enabled. Every locked row is **disabled with a lock icon**, never hidden, and **always
+carries a reason** — both as the row subtitle and as the hover tooltip.
+
+> **Diagnostics** (`docs/USER-GUIDE.md` §5) reports *Model name*, *Form factor*, *CPU
+> architecture*, *Auto Boot supported* and *Auto Boot lock reason*, so a greyed row is
+> verifiable from a copied report without a second round-trip.
 
 ### Edge cases
-- **This is the primary CPU-gated feature.** `uname -m` returning `arm64` must disable the row
-  before the user can interact with it. Disabled, not hidden — see the mock-up. The lock must also
-  *explain itself*: SwiftUI's `.help(_:)` is macOS 11+, so the row is wrapped in the AppKit-backed
-  `TooltipHost` and shows the owner-specified Thai tooltip **"Apple Silicon ไม่รองรับ"**.
+- **This is the primary hardware-gated feature**, and the only rule that needs *two* facts
+  rather than one. `MacProfile.supportsAutoBoot` requires `formFactor == .laptop` **and**
+  `cpuArchitecture == .x86_64`; neither condition is sufficient alone. Disabled, not hidden
+  — see the mock-up. The lock must also *explain itself*: SwiftUI's `.help(_:)` is macOS 11+,
+  so the row is wrapped in the AppKit-backed `TooltipHost`, and both the subtitle and the
+  tooltip carry `MacProfile.autoBootDisabledReason`.
+- **Detection has a fallback chain.** `system_profiler SPHardwareDataType` is the primary
+  source (it reports the marketing model name); `sysctl -n hw.model` is the fallback. On
+  M-series hardware `hw.model` no longer encodes the family (`Mac14,5`), so the fallback
+  yields `.unknown` and the row locks — which costs nothing there, because Apple Silicon is
+  locked on architecture anyway. See ADR-008.
+- The write path is guarded **twice**: the row is greyed by the full rule, and
+  `FeatureCoordinator.setAutoBoot` independently refuses anything that is not `x86_64`,
+  because that guard must hold even if the profile is ever wrong.
 - NVRAM writes persist across reboots, macOS reinstalls, and OS upgrades. There is no per-session
   reset.
 - A value outside the expected `%00` / `%01` set must be surfaced as "unknown" rather than

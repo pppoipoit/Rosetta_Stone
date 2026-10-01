@@ -72,6 +72,7 @@ graph TB
         Priv["SystemCommands<br/>osascript admin bridge"]
         Runner["SystemCommands<br/>/bin/sh process spawn"]
         CPU["CPUArchitecture<br/>uname -m"]
+        Profile["MacProfile<br/>system_profiler → hw.model"]
 
         App --> Status
         App --> Win
@@ -80,6 +81,7 @@ graph TB
         Coord --> Priv
         Coord --> Runner
         Coord --> CPU
+        Coord --> Profile
     end
 
     Login["launchd (user session)"] -->|LaunchAgent| App
@@ -421,10 +423,16 @@ stateDiagram-v2
 
 ---
 
-## 5. CPU detection
+## 5. Hardware detection
 
-Availability for features 4 and 5 is driven entirely by the CPU architecture, detected once at
-launch by running:
+Availability for features 4 and 5 is driven by the cached `MacProfile`: the **model name**, the
+**form factor** derived from it, and the **CPU architecture**. Feature 5 (Rosetta 2) is gated on the
+architecture alone; feature 4 (Auto Boot) needs the architecture **and** the form factor, because every
+Intel desktop passes `uname -m` yet has no lid and no usable `AutoBoot` variable.
+
+### 5.1 CPU architecture (ADR-007)
+
+Detected once at launch by running:
 
 ```bash
 uname -m
@@ -433,8 +441,50 @@ uname -m
 | Output | Meaning | Feature 4 (Auto Boot) | Feature 5 (Rosetta 2) |
 |--------|---------|----------------------|----------------------|
 | `arm64` | Apple Silicon | ⛔ Disabled, greyed + 🔒 | ✅ Enabled (Install button) |
-| `x86_64` | Intel | ✅ Enabled (toggle) | ⛔ Disabled, greyed |
+| `x86_64` | Intel | 🔶 **Architecture permits it** — the form factor decides the row | ⛔ Disabled, greyed |
 | anything else | Unknown / future arch | ⛔ Disabled | ⛔ Disabled |
+
+The Intel row above is deliberately ambiguous: `x86_64` is a *necessary* condition for Auto Boot, not
+a sufficient one. `MacProfile.supportsAutoBoot` is the complete rule.
+
+### 5.2 Mac profile (ADR-008)
+
+The form factor is read from the model name, which comes from two unprivileged sources in order:
+
+```mermaid
+flowchart TD
+    A["MacProfile.current (once per process)"] --> B["SystemCommands.run:<br/>/usr/sbin/system_profiler SPHardwareDataType<br/>(20 s budget)"]
+    B --> C{"exit status 0<br/>and a Model Name parsed?"}
+    C -- yes --> D["MacFormFactor.fromModelName<br/>'MacBook…' → laptop<br/>'iMac' / 'Mac mini' / … → desktop"]
+    C -- "no, or timeout" --> E["SystemCommands.run:<br/>/usr/sbin/sysctl -n hw.model<br/>(5 s budget)"]
+    E --> F{"exit status 0<br/>and a value?"}
+    F -- yes --> G["MacFormFactor.fromModelIdentifier<br/>prefix match: 'MacBook' / 'iMac' /<br/>'Macmini' / 'MacStudio' / 'MacPro'"]
+    F -- no --> H["MacFormFactor.unknown"]
+    G --> H
+    D --> I["MacProfile<br/>(formFactor, modelName, cpuArchitecture)"]
+    H --> I
+    I --> J["FeatureCoordinator.availability(for:)<br/>→ FeatureID.availability(on: profile)"]
+    J --> K{"supportsAutoBoot?<br/>laptop AND x86_64"}
+    K -- yes --> L["Auto Boot row: enabled, PillSwitch"]
+    K -- no --> M["Auto Boot row: greyed + 🔒<br/>subtitle + tooltip = autoBootDisabledReason"]
+```
+
+| Source | Gives | Why it is (not) the primary |
+|--------|------|----------------------------|
+| `system_profiler SPHardwareDataType` | The **marketing** model name (`MacBook Pro`, `iMac`, `Mac mini`) | ✅ Primary — it carries the product family on every machine, including Apple Silicon. |
+| `sysctl -n hw.model` | The machine identifier (`MacBookPro18,3`, `Mac14,5`) | ⚠️ Fallback only — from the M-series generation Apple stopped encoding the family, so `Mac14,5` is unclassifiable and yields `.unknown`. |
+
+Both sources are **read-only and unprivileged**, so opening the window still costs nothing
+(§4). Parsing happens in Swift rather than through a `grep` pipeline, which keeps the command set
+constants-only (layering rule 3, §6) and makes the parser testable off-macOS
+(`tests/MacProfileTests.swift`).
+
+An `.unknown` form factor **locks** the row rather than guessing — a greyed row that explains itself
+is always better than a wrongly-enabled `nvram` write. Diagnostics reports *Model name*, *Form
+factor*, *Auto Boot supported* and *Auto Boot lock reason*, so this decision is verifiable from a
+copied report.
+
+### 5.3 Detection flow
 
 ```mermaid
 flowchart TD
@@ -445,22 +495,36 @@ flowchart TD
     E -- "arm64" --> F["CPUArchitecture.arm64"]
     E -- "x86_64" --> G["CPUArchitecture.x86_64"]
     E -- other --> D
-    F --> H["Auto Boot row: disabled + lock icon<br/>Rosetta 2 row: enabled"]
-    G --> I["Auto Boot row: enabled<br/>Rosetta 2 row: disabled"]
-    D --> J["Both rows disabled + lock icon"]
-    H --> K["FeatureCoordinator publishes availability"]
+    F --> H["MacProfile.arm64"]
+    G --> I["MacProfile.x86_64"]
+    D --> J["MacProfile.unknown"]
+    H --> K{"laptop?"}
     I --> K
     J --> K
+    K -- "yes + Intel" --> L["Auto Boot enabled · Rosetta 2 locked"]
+    K -- "yes + ARM" --> M["Auto Boot locked (NVRAM) · Rosetta 2 enabled"]
+    K -- "no + Intel" --> N["Auto Boot locked (no lid) · Rosetta 2 locked"]
+    K -- "no + ARM" --> O["Both locked · Rosetta 2 enabled"]
+    K -- "unknown" --> P["Auto Boot locked (fail-safe) · Rosetta 2 locked"]
+    L --> Q["FeatureCoordinator publishes availability"]
+    M --> Q
+    N --> Q
+    O --> Q
+    P --> Q
 ```
 
-### Design rules for CPU detection
+### Design rules for hardware detection
 
 | Rule | Rationale |
 |------|-----------|
-| Detect **once** at launch and cache | The architecture cannot change while the process is alive; re-running on every render is wasted work. |
+| Detect **once** at launch and cache | The hardware cannot change while the process is alive; re-running on every render is wasted work. |
+| Availability asks the **profile**, never the architecture alone | Auto Boot needs the form factor as well as the chip; `CPUArchitecture.supportsAutoBoot` was removed so there is exactly one rule. |
 | Use the `libRosettaRuntime` probe — not `uname -m` — to decide the Rosetta 2 *installed* state | An `x86_64` result can also mean "an arm64 Mac already running under Rosetta 2", which would wrongly grey out the Rosetta 2 row. The filesystem probe is authoritative. |
-| Unknown architecture disables features rather than guessing | Fail-safe default: enabling `nvram` writes on an unrecognised machine is not a reasonable guess. |
+| Unknown architecture **or** unknown model disables rather than guessing | Fail-safe default: enabling `nvram` writes on an unrecognised machine is not a reasonable guess. |
 | Grey out, never hide | A visible lock icon explains *why* a feature is unavailable instead of making the user think the app is missing it. |
+| Every lock carries a reason | A greyed row that cannot explain itself reads as a bug. `autoBootDisabledReason` feeds both the subtitle and the tooltip. |
+| Guard the **write path** independently | `setAutoBoot` re-checks `x86_64` on its own, so the invariant holds even if the profile is wrong — it is reachable without touching the UI. |
+| Hardware reads stay unprivileged | Both `uname -m`, `system_profiler` and `sysctl -n hw.model` are reads; opening the window must never prompt (§4). |
 
 ### Why `uname -m` and not alternatives
 
@@ -472,6 +536,15 @@ flowchart TD
 | `#if arch(arm64)` | Compile-time. A single universal binary cannot branch on the host at runtime. |
 | `NXGetLocalArchInfo()` | Deprecated since 10.9. |
 
+### 5.4 Why `system_profiler` and not alternatives for the form factor
+
+| Method | Verdict |
+|--------|---------|
+| `system_profiler SPHardwareDataType` (chosen) | Reports the **marketing** model name, which carries the product family on every machine. Unprivileged, present since 10.3, parsed in Swift. Slow on a cold cache, hence the 20 s budget and the fallback. |
+| `sysctl -n hw.model` (fallback) | One fast scalar, and the family is still encoded on Intel — but **blind on M-series** (`Mac14,5`), which is exactly why it is not the primary. |
+| `ioreg -rd1 -c IOPlatformExpertDevice` | Carries model and CPU, but the output format is undocumented and has shifted between releases. |
+| `uname -m` | Answers the chip question only; it cannot distinguish a MacBook Pro from a Mac mini. |
+
 ---
 
 ## 6. Component map
@@ -479,8 +552,8 @@ flowchart TD
 | Path | Responsibility |
 |------|----------------|
 | `RosettaStone/App/` | `main.swift` (both entry points), `RosettaStoneApp`, `AppDelegate` — mode resolution, URL-scheme entry, reopen handling, live mode switching |
-| `RosettaStone/Models/` | `FeatureID` + `FeatureAvailability` (row copy, CPU gating, clear-cache warning), `AppMode`, `CommandResult` / `ProcessResult` |
-| `RosettaStone/Services/` | `SystemCommands` (the only place that spawns processes or elevates, plus the Gatekeeper version rule), `FeatureCoordinator` (+ `FeatureCoordinator+Actions`), `StartupManager`, `SystemStateReader`, `CPUArchitecture`, `URLActionRouter`, `GatekeeperPolicy`, `Trace` |
+| `RosettaStone/Models/` | `FeatureID` + `FeatureAvailability` (row copy, hardware gating on `MacProfile`, clear-cache warning), `AppMode`, `CommandResult` / `ProcessResult` |
+| `RosettaStone/Services/` | `SystemCommands` (the only place that spawns processes or elevates, plus the Gatekeeper version rule), `FeatureCoordinator` (+ `FeatureCoordinator+Actions`), `StartupManager`, `SystemStateReader`, `CPUArchitecture`, `MacProfile` (model name + form factor, ADR-008), `URLActionRouter`, `GatekeeperPolicy`, `Trace` |
 | `RosettaStone/Views/Main/` | `ContentView` (toggle rows, Rosetta row, Quick Tools grid, footer), `Components`, `Theme` — including `TooltipHost`, the AppKit tooltip used by locked rows |
 | `RosettaStone/Views/MenuBar/` | `MenuBarController` (status item, dropdown menu, panel window), `StatusItemToast`, `DiagnosticsPanel` |
 | `RosettaStone/Support/` | `Info.plist`, `RosettaStone.entitlements` |

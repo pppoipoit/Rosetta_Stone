@@ -49,13 +49,21 @@ enum CPUArchitecture: String {
 
     // MARK: - Availability
 
-    /// The `AutoBoot` NVRAM variable exists only on Intel firmware.
-    var supportsAutoBoot: Bool { self == .x86_64 }
-
     /// Rosetta 2 is an Apple Silicon feature. Note this is used to gate the *UI only* —
     /// whether Rosetta is *installed* is decided by probing
     /// `/usr/libexec/oah/libRosettaRuntime`, because an Apple Silicon Mac running this
     /// binary under Rosetta would still report `x86_64` from `uname -m`.
+    ///
+    /// ## Auto Boot is deliberately **not** answered here
+    ///
+    /// An earlier revision answered "does this Mac support Auto Boot?" from the
+    /// architecture alone (`self == .x86_64`), which let every Intel desktop through — an
+    /// iMac, Mac mini, Mac Studio or Mac Pro all pass `uname -m`, none of them has a lid,
+    /// and on Intel desktop firmware `nvram AutoBoot` is absent or inert. That question
+    /// needs the model as well as the chip, so the single source of truth is now
+    /// `MacProfile.supportsAutoBoot`, which requires **both** `formFactor == .laptop`
+    /// **and** `cpuArchitecture == .x86_64`. `FeatureID.availability(on:)` asks the profile,
+    /// never this type, so there is exactly one Auto Boot rule in the codebase.
     var supportsRosettaInstall: Bool { self == .arm64 }
 
     /// Human-readable label for the menu-bar menu and the window subtitle.

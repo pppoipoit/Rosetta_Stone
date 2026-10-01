@@ -165,8 +165,13 @@ do.
 ### Diagnostics
 
 **Diagnostics…** — the link in the panel footer, or ⌘D in the menu-bar menu — shows the state of
-the running app: CPU architecture, macOS version, process ID, launch mode, activation policy, the
-status item's measured width and which icon it resolved, and whether the login item is installed.
+the running app: CPU architecture, **Mac model name and form factor**, macOS version, process ID,
+launch mode, activation policy, the status item's measured width and which icon it resolved, and
+whether the login item is installed.
+
+It also reports the Auto Boot decision directly — *Auto Boot supported* (Yes/No) and *Auto Boot
+lock reason* (the exact sentence the row is showing you) — so a greyed-out Auto Boot row can be
+diagnosed from a pasted report without guessing.
 
 Use it whenever something looks wrong — an empty menu-bar slot, a missing icon, or a login item
 that does not fire. Click **Copy Report** and paste the result into a bug report; it replaces a
@@ -174,17 +179,33 @@ round of "did it even start?" questions.
 
 ### The lock icon
 
-A greyed-out row with a **padlock** at the right means the feature does not apply to your Mac's
-chip. The row is kept visible — rather than hidden — so the app looks identical on every machine.
+A greyed-out row with a **padlock** at the right means the feature does not apply to your Mac. The row
+is kept visible — rather than hidden — so the app looks identical on every machine.
 
 | Row | Locked on |
 |-----|-----------|
-| Auto Boot | Apple Silicon |
+| Auto Boot | Apple Silicon **and** desktops (iMac, Mac mini, Mac Studio, Mac Pro) |
 | Rosetta 2 | Intel |
 
-Hovering a locked row shows a tooltip saying why. On Apple Silicon the Auto Boot tooltip reads
-**"Apple Silicon ไม่รองรับ"**: M-series firmware owns the auto-boot setting, and its NVRAM is reset
-on every cold boot, so it cannot be changed by the user at all.
+Hovering a locked row shows a tooltip saying why — the same sentence shown under the row title, so a
+greyed row always explains itself.
+
+> **ทำไมปุ่ม Auto Boot ถึงจาง?** — มี 3 เหตุผล และแอปจะบอกเหตุผลที่ตรงกับเครื่องคุณบนแถวเอง:
+>
+> 1. **Apple Silicon** — firmware ของชิป M-series เป็นเจ้าของค่า `AutoBoot` และ **NVRAM ถูกล้างทุกครั้งที่
+>    cold boot** ค่านี้จึงเปลี่ยนโดยผู้ใช้ไม่ได้เลย
+>    → *"Apple Silicon reset NVRAM ทุกครั้งที่ cold boot"*
+> 2. **เครื่องตั้งโต๊ะ (Desktop)** — ไม่มีฝาให้เปิด พฤติกรรมที่สวิตช์นี้ควบคุมจึงไม่มีอยู่จริง
+>    → *"Desktop Mac ไม่มีฝาเปิด-ปิด"*
+> 3. **อ่านชื่อเครื่องไม่ได้** — `system_profiler` ช้า ถูกนโยบายบล็อก หรือไม่มีในระบบ
+>    → *"Unknown Mac model — Auto Boot is disabled to stay safe."*
+>
+> ปุ่ม Auto Boot จะใช้งานได้**เฉพาะ MacBook ที่ใช้ชิป Intel เท่านั้น** ทั้งสามกรณีข้างบนเป็นการ
+> "ปิดทางเข้า" โดยเจตนา เพราะการเขียนค่า NVRAM ผิดที่เป็นการเปลี่ยนแปลงถาวรที่ย้อนกลับไม่ได้
+> จึงเลือกให้ปุ่มที่เห็นเป็นสีเทาพร้อมบอกเหตุผล ดีกว่าปล่อยให้กดแล้วเขียนค่าลงเครื่อง
+
+เปิด **Diagnostics…** (§5) เพื่อดู *Model name*, *Form factor*, *Auto Boot supported* และ
+*Auto Boot lock reason* ของเครื่องคุณได้โดยตรง แล้วคัดลอกไปแนบในบั๊กราฟได้เลย
 
 ---
 
@@ -249,7 +270,7 @@ what you have actually disabled rather than a vague "on".
   normal and takes about a second.
 - **No password required** — this is the only feature in the app that does not ask.
 
-### 6.4 Auto Boot — Intel only
+### 6.4 Auto Boot — Intel MacBook only
 
 Controls whether your Mac powers on by itself when power is restored or the power button is
 pressed.
@@ -258,10 +279,16 @@ pressed.
 - It writes to NVRAM, which is permanent firmware storage. If you turn it off by mistake, use
   Rosetta Stone to turn it back on — but if the write is interrupted the Mac may not auto-power
   until you do.
-- **Apple Silicon: the row is locked, and hovering it reads "Apple Silicon ไม่รองรับ".** M-series
-  firmware owns auto-boot and its NVRAM is reset on every cold boot, so the setting cannot be
-  changed by the user at all — there is nothing for the toggle to write.
-- On Intel the command is `nvram AutoBoot=%03` to enable and `%00` to disable.
+- **Only Intel MacBooks can use it.** Anywhere else the row is locked and states which of the three
+  reasons applies — see the *lock icon* box in §5 for all three, in Thai.
+- On a supported machine the command is `nvram AutoBoot=%03` to enable and `%00` to disable.
+
+| Your Mac | Row | Why |
+|----------|-----|-----|
+| Intel MacBook / Air / Pro | Enabled | The only supported combination. |
+| Apple Silicon MacBook | Locked 🔒 | Firmware owns the setting; NVRAM is reset every cold boot. |
+| iMac, Mac mini, Mac Studio, Mac Pro | Locked 🔒 | No lid — and on Intel desktops the variable is absent or ignored. |
+| Unrecognised model | Locked 🔒 | The app cannot identify the machine and fails safe. |
 
 ### 6.5 Rosetta 2 — Apple Silicon only
 
@@ -455,7 +482,7 @@ machine.
 | Password prompt never appears | Check that a previous `osascript` dialog is not hidden behind another window. Only one privileged action runs at a time. |
 | "Operation not permitted" | You cancelled the prompt, or the command needs root and did not get it. Retry and complete the password prompt. |
 | Rosetta 2 install fails | You need an internet connection. On macOS 11.0–11.2 the component is not bundled; update to 11.3+ first. |
-| Auto Boot toggle is greyed | You are on Apple Silicon — M-series firmware owns auto-boot and its NVRAM is reset on every cold boot, so the setting cannot be changed by the user. Hovering the row says so (§6.4). |
+| Auto Boot toggle is greyed | Auto Boot works on **Intel MacBooks only**. Three reasons: (1) Apple Silicon — firmware owns the setting and NVRAM is reset every cold boot; (2) a desktop — there is no lid; (3) the model could not be read, and the app fails safe. The row itself names your reason, and hovering repeats it (§6.4). **Diagnostics…** reports *Auto Boot supported* and *Auto Boot lock reason*. |
 | Gatekeeper toggle keeps flipping back | Your Mac is managed by an organisation profile. That profile wins. |
 | Finder vanished | It restarted after toggling Hidden Files. It comes back on its own within a second. |
 

@@ -65,7 +65,18 @@ final class FeatureCoordinator: ObservableObject {
 
     // MARK: - Dependencies
 
-    let architecture: CPUArchitecture
+    /// What this Mac **is** — the model name, the form factor derived from it, and the
+    /// already-detected CPU architecture (ADR-008).
+    ///
+    /// This is the *only* hardware identity the availability rules consult. It used to be a
+    /// bare `CPUArchitecture`, which could answer "Intel or Apple Silicon?" but not "does
+    /// this machine have a lid?" — and Auto Boot needs both answers.
+    let profile: MacProfile
+
+    /// The host CPU, as part of `profile`. Kept as a named property because the panel header
+    /// and the Diagnostics report both display it on its own.
+    var architecture: CPUArchitecture { profile.cpuArchitecture }
+
     let startupManager = StartupManager()
 
     /// Serialises every state-mutating operation. Reads run here too, so a
@@ -91,14 +102,16 @@ final class FeatureCoordinator: ObservableObject {
 
     // MARK: - Init
 
-    init(architecture: CPUArchitecture = .current) {
-        self.architecture = architecture
+    /// - Parameter profile: injectable so the availability rules can be exercised against
+    ///   a synthetic machine without a Mac in the loop (`tests/MacProfileTests.swift`).
+    init(profile: MacProfile = .current) {
+        self.profile = profile
     }
 
-    // MARK: - Availability (derived from the cached CPU detection)
+    // MARK: - Availability (derived from the cached hardware profile)
 
     func availability(for feature: FeatureID) -> FeatureAvailability {
-        feature.availability(on: architecture)
+        feature.availability(on: profile)
     }
 
     /// True while any operation is in flight.

@@ -15,7 +15,11 @@ import AppKit
 /// ## Fields
 /// | Field | Why it matters |
 /// |-------|----------------|
-/// | CPU architecture | Explains a greyed-out Auto Boot / Rosetta row |
+/// | CPU architecture | Explains a greyed-out Rosetta row, and half of the Auto Boot lock |
+/// | Form factor | The **other** half of the Auto Boot lock — a Desktop cannot use it even on Intel |
+/// | Model name | The raw `system_profiler` / `hw.model` value the classification came from |
+/// | Auto Boot supported | Yes/No, so a greyed Auto Boot row is verifiable from this report alone |
+/// | Auto Boot lock reason | The exact subtitle/tooltip string the user is seeing, so a wrong reason is obvious |
 /// | macOS version | Explains an SF Symbol that resolved differently |
 /// | Process ID | Ties the panel to the right process in Activity Monitor |
 /// | Launch mode | Mode A (normal app) vs mode B (menu-bar gadget) — the Run at Startup posture |
@@ -46,9 +50,24 @@ enum DiagnosticsPanel {
             Field(label: "Version", value: MenuBarController.versionString),
             Field(label: "Process ID", value: "\(ProcessInfo.processInfo.processIdentifier)"),
             Field(label: "macOS", value: Trace.osVersionText()),
+
+            // --- Hardware identity (ADR-008) ---------------------------------
+            // The four Auto Boot gates in one block: the two inputs, the boolean they
+            // produce, and the string the user is being shown. A greyed Auto Boot row
+            // must be verifiable from this report without a second round-trip.
+            Field(label: "Model name",
+                  value: coordinator.profile.modelName.isEmpty
+                    ? "— (not detected)" : coordinator.profile.modelName),
+            Field(label: "Form factor",
+                  value: coordinator.profile.formFactor.displayName),
             Field(label: "CPU architecture",
                   value: coordinator.architecture.displayName
                     + (coordinator.architecture.isRunningUnderTranslation ? " (translated)" : "")),
+            Field(label: "Auto Boot supported",
+                  value: coordinator.profile.supportsAutoBoot ? "Yes" : "No"),
+            Field(label: "Auto Boot lock reason",
+                  value: coordinator.profile.autoBootDisabledReason ?? "— (available)"),
+
             Field(label: "Launch mode",
                   value: appDelegate?.mode.displayName
                     ?? (controller.gadgetMode

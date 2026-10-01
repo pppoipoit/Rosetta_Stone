@@ -40,7 +40,7 @@ Design constraints that shape everything:
 | 1 | Run at Startup | Toggle (mode switch) | `create` / `remove` `~/Library/LaunchAgents/com.rosettastone.helper.plist` | **Yes** (admin) | All |
 | 2 | Gatekeeper | Toggle | `spctl --master-disable` / `spctl --master-enable` (macOS 15+: confirm “Anywhere” in System Settings) | **Yes** (admin) | All |
 | 3 | Hidden Files | Toggle (ON = show) | `defaults write com.apple.finder AppleShowAllFiles YES/NO` + `killall Finder` | No | All |
-| 4 | Auto Boot | Toggle | `nvram AutoBoot=%03` / `nvram AutoBoot=%00` | **Yes** (admin) | Intel only; greyed + lock icon on Apple Silicon |
+| 4 | Auto Boot | Toggle | `nvram AutoBoot=%03` / `nvram AutoBoot=%00` | **Yes** (admin) | Intel MacBook only; greyed + lock icon on Apple Silicon *and* on desktops, with the reason shown inline |
 | 5 | Rosetta 2 | Install button | `softwareupdate --install-rosetta --agree-to-license` | **Yes** (admin) | Apple Silicon only; greyed on Intel; installed-check via `/usr/libexec/oah/libRosettaRuntime` |
 | 6 | Spotlight Rebuild | Button | `mdutil -E /` | **Yes** (admin) | All |
 | 7 | DNS Flush | Button | `dscacheutil -flushcache` + `killall -HUP mDNSResponder` | **Yes** (admin) | All |
@@ -56,7 +56,7 @@ Design constraints that shape everything:
 Run at Startup      [ toggle ]
 Gatekeeper          [ toggle ]
 Hidden Files        [ toggle ]
-Auto Boot           [ lock ]  /  [ toggle ]     <- Intel only
+Auto Boot           [ lock ]  /  [ toggle ]     <- Intel MacBook only
 Rosetta 2           [ Install ]                 <- Apple Silicon only
 Quick Tools         [ Spotlight ] [ DNS ] [ Cache ]
 ```
@@ -77,13 +77,18 @@ Full behavioural detail, per-feature command strings, and edge cases: **[docs/FE
 | Privileges | An administrator account. 7 of 8 features prompt for elevation. |
 | Disk | < 50 MB |
 | Network | Only for the Rosetta 2 install; all other features are fully offline |
-| Runtime dependencies | None. System tools only: `spctl`, `nvram`, `mdutil`, `dscacheutil`, `defaults`, `killall`, `softwareupdate`. |
+| Runtime dependencies | None. System tools only: `spctl`, `nvram`, `mdutil`, `dscacheutil`, `defaults`, `killall`, `softwareupdate`. Read-only detection additionally uses `uname`, `system_profiler` and `sysctl`. |
 
-**Feature 4 (Auto Boot)** is Intel-only (`nvram AutoBoot=%03` / `%00`) and **Feature 5 (Rosetta 2)**
-is Apple-Silicon-only. The UI greys out the inapplicable row and shows a lock icon rather than
-hiding it, so the feature list stays visually stable across machines; hovering a locked row
-explains why. On Apple Silicon the Auto Boot row is locked because M-series firmware owns the
-setting and NVRAM is reset on every cold boot — the tooltip reads *"Apple Silicon ไม่รองรับ"*.
+**Feature 4 (Auto Boot)** works on **Intel MacBooks only** (`nvram AutoBoot=%03` / `%00`), and
+**Feature 5 (Rosetta 2)** is Apple-Silicon-only. The UI greys out the inapplicable row and shows a
+lock icon rather than hiding it, so the feature list stays visually stable across machines; the
+locked row's subtitle **and** its hover tooltip both state the reason, so it always explains itself.
+
+Auto Boot is locked for three reasons, and the app picks the one that matches your machine: Apple
+Silicon (*"Apple Silicon reset NVRAM ทุกครั้งที่ cold boot"* — firmware owns the setting), a desktop
+(*"Desktop Mac ไม่มีฝาเปิด-ปิด"* — there is no lid, and Intel desktop firmware ignores the
+variable), or an unidentifiable model (the app fails safe). **Diagnostics…** reports *Model name*,
+*Form factor*, *Auto Boot supported* and *Auto Boot lock reason*.
 
 ---
 
@@ -159,6 +164,20 @@ xcodebuild -project RosettaStone.xcodeproj -scheme RosettaStone \
 xcodebuild -project RosettaStone.xcodeproj -scheme RosettaStone \
            -configuration Release ARCHS=x86_64 ONLY_ACTIVE_ARCH=NO build
 ```
+
+### Tests
+
+The Auto Boot gate is the one rule in the app where a wrong answer writes firmware settings, so its
+logic is covered by a committed harness that needs no Mac, no Xcode and no package manager:
+
+```bash
+swiftc -swift-version 5 -o macprofile-tests tests/MacProfileTests.swift
+./macprofile-tests          # exit 0 == all 39 assertions passed
+```
+
+It exercises the model classification, the `system_profiler` parser, the availability rule and the
+lock reasons. See `tests/MacProfileTests.swift` and
+[ADR-008](docs/DECISIONS.md#adr-008).
 
 ### Signing locally
 
@@ -241,7 +260,7 @@ Full wiring walkthrough: [docs/USER-GUIDE.md](docs/USER-GUIDE.md#5-apple-shortcu
 | Document | Contents |
 |----------|----------|
 | [docs/FEATURES.md](docs/FEATURES.md) | Per-feature spec: command, admin flag, availability matrix, edge cases |
-| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Process model, startup flow, URL-scheme flow, privilege escalation, CPU detection — with Mermaid diagrams |
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Process model, startup flow, URL-scheme flow, privilege escalation, hardware detection — with Mermaid diagrams |
 | [docs/CI-CD.md](docs/CI-CD.md) | Line-by-line explanation of the GitHub Actions workflow |
 | [docs/USER-GUIDE.md](docs/USER-GUIDE.md) | End-user manual, first-run warnings, Shortcuts recipes |
 | [docs/DECISIONS.md](docs/DECISIONS.md) | ADRs: NSStatusItem vs MenuBarExtra, URL Scheme vs App Intents, ad-hoc signing, create-dmg, matrix builds |
@@ -256,12 +275,13 @@ rosetta-stone/
 ├── .github/workflows/     CI pipeline (build-mac-dmg.yml)
 ├── docs/                  Specifications and manuals
 ├── scripts/               Developer helper scripts (first-run.sh)
+├── tests/                 MacProfileTests.swift — 39-assertion harness, runnable off-macOS
 ├── RosettaStone/          Swift sources
 │   ├── App/               main.swift, RosettaStoneApp, AppDelegate
 │   ├── Models/            FeatureID, AppMode, CommandResult
 │   ├── Resources/         Assets.xcassets
 │   ├── Services/          SystemCommands, FeatureCoordinator(+Actions), StartupManager,
-│   │                      SystemStateReader, CPUArchitecture, URLActionRouter,
+│   │                      SystemStateReader, CPUArchitecture, MacProfile, URLActionRouter,
 │   │                      GatekeeperPolicy, Trace
 │   ├── Support/           Info.plist, RosettaStone.entitlements
 │   └── Views/

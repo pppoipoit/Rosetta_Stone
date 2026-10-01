@@ -102,16 +102,32 @@ extension FeatureCoordinator {
     /// 3-digit zero-padded binary the firmware expects (`%03` is the Intel default for
     /// "auto boot on"; `%01` is tolerated on read for machines already carrying it).
     ///
-    /// Guarded twice: the UI disables the row on Apple Silicon — where M-series firmware
-    /// owns this variable and NVRAM is reset on every cold boot, so it cannot be changed
-    /// by the user at all — and this guard protects the write path itself, which can be
-    /// reached without touching the UI.
+    /// Guarded twice, and the two guards are deliberately different questions:
+    ///
+    /// 1. **`availability(for:)`** — the full `MacProfile` rule: Intel **and** a lid. This is
+    ///    what the row itself is greyed out by, so the user never reaches this method.
+    /// 2. **The Intel check below** — defense in depth. The write path is also reachable
+    ///    without touching the UI, and the *only* unconditional hardware error it can make
+    ///    is an `nvram` write to Apple Silicon firmware, where the variable does not exist
+    ///    and NVRAM is reset on every cold boot. That check stays narrow on purpose: it is
+    ///    the invariant that must hold even if the profile is ever wrong or unrecognised,
+    ///    so it is written as a literal rather than delegating back to the profile.
     func setAutoBoot(enabled: Bool) {
-        guard availability(for: .autoBoot).isEnabled else {
-            report("Auto Boot is not available on \(architecture.displayName) — this Mac has no AutoBoot NVRAM variable.",
+        // Intel-only, stated independently of `MacProfile`.
+        guard profile.cpuArchitecture == .x86_64 else {
+            report("Auto Boot cannot be changed on \(architecture.displayName) — M-series firmware "
+                 + "owns the AutoBoot setting and its NVRAM is reset on every cold boot.",
                    style: .failure)
             return
         }
+
+        guard availability(for: .autoBoot).isEnabled else {
+            let reason = profile.autoBootDisabledReason
+                ?? "no lid, or the model could not be identified"
+            report("Auto Boot is not available on this Mac — \(reason).", style: .failure)
+            return
+        }
+
         perform(.autoBoot,
                 successMessage: enabled ? "Auto boot is enabled." : "Auto boot is disabled.",
                 work: {
