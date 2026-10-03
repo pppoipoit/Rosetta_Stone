@@ -28,8 +28,38 @@ permissions:
   contents: write
 
 jobs:
+  # ----------------------------------------------------------------------
+  # job เทสต์ — รัน MacProfile harness ก่อน build
+  #
+  # รันบน ubuntu-latest ไม่ใช่ macos-latest เพราะ:
+  #  - harness เป็น pure logic (ไม่มี Process/Darwin) จึงรันได้ทุกแพลตฟอร์ม
+  #  - ubuntu-latest มี Swift 6.4 ติดตั้งมาอยู่แล้ว ไม่ต้องเพิ่ม setup-swift action
+  #  - ถ้าพังตรงนี้ เราจะเสียเวลา build ทั้ง 2 สถาปัตยกรรมไปเปล่า ๆ
+  #
+  # Auto Boot เป็นกฎเดียวในแอปที่ผิดแล้วเขียนค่า firmware ถาวร การ gate ไว้ตรงนี้
+  # จึงคุ้มกว่าการตรวจหลังจบ (ADR-008)
+  # ----------------------------------------------------------------------
+  test:
+    name: Test (MacProfile harness)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # ใช้คำสั่งเดียวกับที่ระบุไว้ใน header ของไฟล์ และใน README
+      # ถ้าสองที่นี้ไม่ตรงกัน แปลว่าเอกสารเพี้ยน ไม่ใช่แค่ของตัวอย่าง
+      - name: Compile and run MacProfile harness
+        run: |
+          set -euo pipefail
+          swift --version
+          swiftc -swift-version 5 -o macprofile-tests tests/MacProfileTests.swift
+          ./macprofile-tests
+
   build:
     name: Build (${{ matrix.output_name }})
+    # ต้องผ่าน harness ก่อน — build ทั้ง 2 สถาปัตยกรรมค่อยเริ่ม
+    needs: test
     runs-on: macos-latest
 
     strategy:
@@ -186,11 +216,11 @@ jobs:
 
   # ----------------------------------------------------------------------
   # job สร้าง GitHub Release — ทำงานเฉพาะตอน push tag เท่านั้น
-  # รอให้ job build ทั้งสองสถาปัตยกรรมเสร็จก่อน (needs: build)
+  # รอให้ harness (ผ่านทาง build) และ build ทั้งสองสถาปัตยกรรมเสร็จก่อน
   # ----------------------------------------------------------------------
   release:
     name: Publish GitHub Release
-    needs: build
+    needs: [test, build]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
 

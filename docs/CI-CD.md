@@ -4,12 +4,16 @@ Workflow file: [`.github/workflows/build-mac-dmg.yml`](../.github/workflows/buil
 
 This document explains every trigger, job, and step of the pipeline, in the order they execute.
 
-The workflow is a structural mirror of a reference .NET pipeline
+The workflow began as a structural mirror of a reference .NET pipeline
 (`setup-dotnet` → `dotnet publish` → hand-assembled `.app` → `codesign` →
 `create-dmg` → verify → upload → release). Only the **build mechanism** differs:
 `brew install xcodegen` → `xcodegen generate` → `xcodebuild`. Everything else —
 triggers, matrix shape, ad-hoc signing, `create-dmg` flags, DMG verification,
 artifact upload and the release job — is inherited from the reference unchanged.
+
+> **Phase 7.2 added one job that is not from the reference:** a `test` job that runs the
+> committed `MacProfile` harness (39 assertions) on `ubuntu-latest` and **gates the build**
+> (`build.needs: test`). See §1 and [ADR-008](DECISIONS.md#adr-008).
 
 ---
 
@@ -17,8 +21,9 @@ artifact upload and the release job — is inherited from the reference unchange
 
 ```mermaid
 flowchart TD
-    A{"Trigger"} -->|workflow_dispatch| B["build job (matrix)"]
-    A -->|"push tag v*"| B
+    A{"Trigger"} --> T["test job (ubuntu-latest)<br/>swiftc + MacProfile harness<br/>39 assertions"]
+    T -- fail --> X["Stop — no build, no release"]
+    T -- pass --> B["build job (macos-latest matrix)"]
     B --> C1["leg 1: arch=arm64<br/>RosettaStone-AppleSilicon.dmg"]
     B --> C2["leg 2: arch=x86_64<br/>RosettaStone-Intel.dmg"]
     C1 --> D["actions/upload-artifact@v4"]
@@ -32,13 +37,38 @@ flowchart TD
 
 | Aspect | Value |
 |--------|-------|
+| Runner (test) | `ubuntu-latest` — Swift 6.4 is preinstalled, no `setup-swift` needed |
 | Runner (build) | `macos-latest` |
 | Runner (release) | `ubuntu-latest` |
 | Matrix legs | 2 (`arch=arm64`, `arch=x86_64`) |
+| Tests | 39 assertions (`tests/MacProfileTests.swift`), run before the build |
 | Output | Two `.dmg` artifacts, one per architecture |
 | Signing | Ad-hoc (`codesign --force --deep --sign -`) — no certificate required |
 | Notarization | **None** — see [ADR-003](DECISIONS.md#adr-003) |
 | Project source of truth | `project.yml` (`.xcodeproj` is generated, never committed) |
+
+### Job: `test` (added in Phase 7.2)
+
+```yaml
+test:
+  name: Test (MacProfile harness)
+  runs-on: ubuntu-latest
+  steps:
+    - uses: actions/checkout@v4
+    - name: Compile and run MacProfile harness
+      run: |
+        set -euo pipefail
+        swift --version
+        swiftc -swift-version 5 -o macprofile-tests tests/MacProfileTests.swift
+        ./macprofile-tests
+```
+
+| Setting | Reason |
+|---------|--------|
+| `runs-on: ubuntu-latest`, not `macos-latest` | The harness is pure `Foundation` logic with no `Process` or `Darwin` dependency, so it runs anywhere. `ubuntu-latest` also ships Swift preinstalled, so this needs **no** extra action and costs seconds rather than minutes of macOS runner time. |
+| `build.needs: test` | The gate runs **before** either matrix leg, not after. Auto Boot is the one rule in the app where a wrong answer writes permanent firmware settings, so there is no reason to spend two macOS builds discovering a logic regression — and `fail-fast` is irrelevant here because the legs never start. |
+| `set -euo pipefail` | A non-zero exit from the harness fails the job. Without `-e`, a failing `./macprofile-tests` would be swallowed by the pipeline's default exit status. |
+| The command is verbatim the file header's | If the workflow, the header and the README ever disagree, that is a documentation bug rather than a silently different test. |
 
 ---
 
@@ -280,14 +310,14 @@ artifact or attached to a release. `if-no-files-found: error` in step 10 is the 
 ```yaml
 release:
   name: Publish GitHub Release
-  needs: build
+  needs: [test, build]
   if: startsWith(github.ref, 'refs/tags/v')
   runs-on: ubuntu-latest
 ```
 
 | Setting | Reason |
 |---------|--------|
-| `needs: build` | Waits for **both** matrix legs. If either architecture fails to build, no release is published — you never ship a half-release. |
+| `needs: [test, build]` | Waits for **both** matrix legs **and** the MacProfile harness. If either architecture fails to build, or the Auto Boot gate regresses, no release is published — you never ship a half-release, and never ship one with a broken firmware gate. `build` already needs `test`, so this is belt-and-braces rather than the only link. |
 | `if: startsWith(github.ref, 'refs/tags/v')` | The tag filter. A `workflow_dispatch` run builds and uploads artifacts but publishes nothing. This condition is the only difference between the two trigger paths. |
 | `runs-on: ubuntu-latest` | Creating a release needs no macOS tooling, and it is cheaper and faster than a macOS runner. The DMGs are already built and uploaded as artifacts. |
 
@@ -345,6 +375,10 @@ reference workflow's naming.
 ## 7. Local reproduction
 
 ```bash
+# 0) Run the MacProfile harness first -- this is what CI does before building
+swiftc -swift-version 5 -o macprofile-tests tests/MacProfileTests.swift
+./macprofile-tests
+
 # 1) Generate the project and build a specific architecture
 brew install xcodegen
 xcodegen generate --spec project.yml

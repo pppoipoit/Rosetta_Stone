@@ -179,6 +179,10 @@ It exercises the model classification, the `system_profiler` parser, the availab
 lock reasons. See `tests/MacProfileTests.swift` and
 [ADR-008](docs/DECISIONS.md#adr-008).
 
+This harness is **enforced in CI**: the `test` job runs it on `ubuntu-latest` *before* either build
+leg, so a regression in the Auto Boot gate stops the pipeline instead of shipping a DMG.
+See [docs/CI-CD.md](docs/CI-CD.md).
+
 ### Signing locally
 
 Signing is **optional** for local runs. To strip the quarantine attribute that causes

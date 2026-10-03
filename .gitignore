@@ -27,6 +27,16 @@ RosettaStone.xcodeproj/
 .swiftpm/
 Package.resolved
 
+# ==== Compiled test harness =====
+# `swiftc -o macprofile-tests tests/MacProfileTests.swift` drops a binary in the
+# working directory. On Windows it also emits an import library and an export
+# file next to it. None of these are source.
+macprofile-tests
+macprofile-tests.*
+tests/macprofile-tests*
+*.exp
+*.lib
+
 # ==== Release artifacts ====
 *.dmg
 *.zip

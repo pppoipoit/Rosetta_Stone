@@ -45,6 +45,17 @@
 
 import Foundation
 
+// `exit()` lives in the platform C library, not in Foundation. `import Foundation` happens
+// to re-export it on Linux today, but relying on that is exactly the kind of implicit
+// dependency that breaks on the next toolchain, so it is imported explicitly. This is
+// also what lets the harness run on the ubuntu-latest CI runner, which is the whole
+// point of committing it.
+#if canImport(Darwin)
+import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#endif
+
 // MARK: - Stubs (the two dependencies MacProfile cannot compile without)
 
 /// Stand-in for `RosettaStone/Services/CPUArchitecture.swift`.

@@ -12,6 +12,76 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 The first working build. Application code, the XcodeGen project specification and the CI
 pipeline now exist and both matrix legs build green on GitHub Actions.
 
+### Phase 7.2 — MacProfile wiring, committed tests, CI gate
+
+**Auto Boot was gated on `uname -m` alone, which let every Intel desktop through.** An iMac, Mac
+mini, Mac Studio and Mac Pro all report `x86_64`, so all four were offered a live toggle for a
+setting that does nothing there — the feature is about opening a lid, and on Intel desktop firmware
+`nvram AutoBoot` is absent or inert. Auto Boot is now gated on the **model** as well as the chip.
+
+#### Added
+
+- **`MacProfile`** (`Services/MacProfile.swift`) — the model name, the form factor derived from it
+  (`MacFormFactor`: `.laptop` / `.desktop` / `.unknown`) and the already-detected
+  `CPUArchitecture`. Detected once per process from `system_profiler SPHardwareDataType`, falling
+  back to `sysctl -n hw.model`. Both sources are read-only and unprivileged, so opening the window
+  still costs nothing. See [ADR-008](docs/DECISIONS.md#adr-008).
+- **`tests/MacProfileTests.swift`** — **39 assertions**, self-contained with stubs and runnable
+  **off-macOS** from a bare `swiftc`. Committed rather than kept as a scratch file because this gate
+  is the one place in the app where a wrong answer writes permanent firmware settings:
+  ```bash
+  swiftc -swift-version 5 -o macprofile-tests tests/MacProfileTests.swift
+  ./macprofile-tests
+  ```
+- **CI `test` job** — runs the harness on `ubuntu-latest` (Swift is preinstalled, so no
+  `setup-swift` action) and **gates the build** via `build.needs: test`. A regression in the Auto
+  Boot gate now stops the pipeline instead of shipping a DMG.
+- **Diagnostics fields** — *Model name*, *Form factor*, *Auto Boot supported* and *Auto Boot lock
+  reason*, so a greyed-out row is verifiable from a copied report without a second round-trip.
+- **Panel header** now shows the form factor as well as the architecture (`macOS 15.4 · Intel ·
+  Laptop`), because an “Intel” caption alone is misleading on a Mac mini, whose row is locked.
+
+#### Changed
+
+- **`FeatureID.availability(on:)` takes a `MacProfile`**, not a bare `CPUArchitecture`. Auto Boot
+  availability is `profile.supportsAutoBoot`; the row subtitle **and** the hover tooltip both carry
+  `profile.autoBootDisabledReason`, so a greyed row always explains itself.
+- **`CPUArchitecture.supportsAutoBoot` removed.** There is now exactly one Auto Boot rule in the
+  codebase, with the rationale recorded on `supportsRosettaInstall` so it is not re-added.
+- **`FeatureCoordinator` exposes `MacProfile.current`** (`init(profile:)` is injectable) and keeps
+  `architecture` as a derived accessor for the header, the menu and Diagnostics.
+- Rosetta 2 remains purely architectural (`profile.cpuArchitecture`) — it does not care about a lid.
+
+#### Fixed
+
+- **Intel desktops no longer offer a dead Auto Boot toggle.** The gate requires
+  `formFactor == .laptop` **and** `cpuArchitecture == .x86_64`; neither condition is sufficient alone.
+- **Every locked Auto Boot row carries a reason.** Three are possible, and the app reports the one
+  that matches the machine: `Desktop Mac ไม่มีฝาเปิด-ปิด`, `Apple Silicon reset NVRAM ทุกครั้งที่ cold boot`,
+  or the English fail-safe string for an unrecognised model. An `.unknown` model **locks** the row
+  rather than guessing, matching the rule ADR-007 set for an unrecognised architecture.
+
+#### Security / robustness
+
+- **The write path keeps its own Intel-only guard.** `FeatureCoordinator.setAutoBoot` checks
+  `x86_64` as a literal rather than delegating to the profile, so the invariant holds even if the
+  profile is ever wrong — the write path is reachable without touching the UI.
+
+#### Documentation
+
+- `docs/FEATURES.md` §4 — 5-row availability matrix (Intel laptop ✅ / Apple Silicon laptop ❌ NVRAM
+  / Intel desktop ❌ no lid / Apple Silicon desktop ❌ both / unknown) and rewritten edge cases.
+- `docs/ARCHITECTURE.md` §5 is now “Hardware detection”: 5.1 `uname`, 5.2 the `MacProfile` flow with
+  a `system_profiler → hw.model` fallback diagram, 5.3 the combined detection flow, 5.4 method
+  alternatives. `MacProfile` added to the §1 services diagram and the §6 component map.
+- `docs/DECISIONS.md` — **ADR-008** records the no-grep parsing choice, the `hw.model` blind spot on
+  M-series, the `.unknown` fail-safe, and the committed harness location.
+- `docs/USER-GUIDE.md` — the **“ทำไมปุ่ม Auto Boot ถึงจาง?”** troubleshooting entry with all three
+  reasons, plus §5 lock icon, §6.4 and §11.
+- `docs/CI-CD.md` — the new `test` job, its runner choice and gating rationale; `release` is now
+  `needs: [test, build]`.
+- `README.md` — Auto Boot availability is **“Intel MacBook only”**, plus the test command.
+
 ### Phase 6 — two-mode intent + auditor fixes
 
 **The app now has two modes, chosen by the Run at Startup toggle** (the owner-clarified intent).
