@@ -12,6 +12,146 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 The first working build. Application code, the XcodeGen project specification and the CI
 pipeline now exist and both matrix legs build green on GitHub Actions.
 
+### Phase 9 — deferred queue, single-auth batching, app icon, credits
+
+**Clicking a switch no longer runs a command.** The panel became a staging area: every row records
+an intent, and two master buttons — **❌ ยกเลิก** and **✅ ตกลง** (⌘↩) — commit or discard the
+whole set. Committing raises **one** password dialog for the entire queue.
+
+Before this, switching on Gatekeeper, Hidden Files and Auto Boot in one sitting produced **three**
+Authorization dialogs: the same password typed three times, each prompt stealing focus from the
+panel. That was the problem being solved.
+
+#### Added
+
+- **The deferred queue.** `@State pendingChanges: [FeatureID: PendingChange]` in `ContentView`
+  holds staged intents; `stageToggle` / `stageAction` record them and `applyPendingChanges` /
+  `cancelPendingChanges` commit or discard them. The switch renders the **staged** value, because a
+  panel that appears to ignore your click reads as a bug ([ADR-009](docs/DECISIONS.md#adr-009)).
+- **An orange ● pending dot** beside any row title holding a staged change (`PendingDot`,
+  `Theme.pending`). It is defined as `pending ≠ actual`, so toggling a switch and toggling it
+  straight back leaves no dot behind — a dot for a change that does not exist would be a lie.
+- **`ApplyBar`** — the two master buttons, disabled while the queue is empty so the panel teaches
+  the rule by refusing to apply nothing. Apply carries ⌘↩ on macOS 11+ and ↩ on the 10.15 floor,
+  via `ConditionalCommandReturnShortcut`, because `keyboardShortcut(_:modifiers:)` is macOS 11+.
+- **`SystemCommands.runBatched(_:)`** — the single-auth engine. It splits commands by
+  `requiresAdmin`, concatenates every privileged command into **one** shell script inside a single
+  `do shell script … with administrator privileges`, and derives per-command outcomes from stdout
+  markers rather than the exit code.
+- **`FeatureCoordinator.applyBatch(_:)`** — commits a queue under the **same** single-operation
+  lock every other write uses, so a batch and a menu-bar toggle can never each believe they own the
+  machine and raise two dialogs at once.
+- **`BatchReportSheet`** — a per-item ✅/❌ dialog raised only when something actually failed. It
+  lists *every* row, not just the failures, so the successes are visibly confirmed too.
+- **The `สำเร็จทั้งหมด` banner** on a fully successful batch, plus a count on the Apply button.
+- **`RosettaStone/Support/AppIcon.appiconset/`** — the ten macOS icon sizes, with the
+  `ASSETCATALOG_COMPILER_APPICON_NAME` / `CFBundleIconFile` wiring.
+- **`scripts/generate-icons.sh`** — generates all ten sizes from the 1024×1024 master with
+  ImageMagick, then verifies that every file the committed `Contents.json` references exists.
+  Preflight fails loudly and specifically for each of the three ways to be misconfigured.
+- **App icon credits** in `README.md` §Credits and `Info.plist`, naming Abshifflett and
+  [CC BY-SA 3.0](https://creativecommons.org/licenses/by-sa/3.0)
+  ([ADR-010](docs/DECISIONS.md#adr-010)).
+
+#### Changed
+
+- **Per-command results come from markers, not the exit code.** A multi-command script's status is
+  always the status of its last command, so 7/7 and 2/7 would both report `0`. Each command is
+  wrapped as `if ( cmd ) >/dev/null 2>&1 ; then echo 'RS_OK:<feature>' ; else echo 'RS_FAIL:<feature>' ; fi`.
+- **Markers are matched exactly, never by prefix.** `RS_OK:install-rosetta-extra` must never
+  satisfy the `install-rosetta` row. `FeatureCommand.marker` is derived from `FeatureID.rawValue`
+  so a command cannot be reported under a marker that does not match its row.
+- **Silence is failure.** A command that prints no marker is reported as failed — the existing
+  "never trust the exit code" rule, applied to an exit code that is always `0`.
+- **No `set -e`, and no `&&`/`||` chains.** `set -e` would abort the batch on the first failure; in
+  an `&&` chain a command whose last statement fails can emit *both* markers. Commands are joined
+  with `;` inside their own `if/then/else`, so one failure never aborts the rest.
+- **`killall Finder` runs once per batch**, not once per row, and only if the hidden-files write
+  actually succeeded. It moved from the command body to `FeatureCommand.batchPostStep`.
+- **Auto Boot is re-checked at apply time.** A change staged on a row that later became
+  unavailable is refused rather than written to firmware.
+- **A batch inherits its slowest member's timeout**, so a queued Rosetta 2 install is not cut off
+  at the 30 s default.
+- **Cancellation is silent, aborts the batch, and keeps the queue.** Dismissing the Authorization
+  dialog reports **every** row as cancelled — privileged *and* unprivileged — and the
+  unprivileged half is then **not run**. Running the LaunchAgent write while Gatekeeper silently
+  did not change would be exactly the half-applied state the queue exists to prevent. The queue is
+  left intact, so ✅ can simply be pressed again.
+- **The macOS 15+ Gatekeeper follow-up now runs after a batch too**, and only when `spctl`
+  succeeded. Opening System Settings after a failed or cancelled command would contradict the
+  message the user is looking at.
+- **Confirmations moved to stage time.** The Auto Boot NVRAM warning, the Rosetta 2
+  "several minutes" warning and the Clear System Cache warning are all shown *before* the password
+  prompt now, rather than between it and the command.
+- **There is one command table.** `FeatureCoordinator.command(for:pending:)` is now the only place
+  that turns a feature plus a desired value into a command, and the immediate paths
+  (`setRunAtStartup`, `toggleGatekeeper`, `flushDNS`, …) route through `runImmediately(_:pending:)`.
+  The queued route and the shortcuts therefore execute byte-identical commands and cannot drift.
+  `FeatureCoordinator.Tool` became internal so both can share the same binary paths.
+- **`activeFeature` became `ActiveOperation`** (`.feature(_)` / `.batch`), because the invariant is
+  *one privileged thing at a time*, not *one row at a time*. `isBusy` now also covers
+  `isApplyingBatch`, which keeps the menu bar from firing a shortcut beside a live dialog.
+- **The panel is 60 pt taller** (`panelHeight` 540 → 600). The extra height is absorbed by the
+  existing `Spacer`s, so no row was shrunk or removed.
+
+#### Security / robustness
+
+- **Pending state is view-local and never read by a service.** `ContentView` owns
+  `pendingChanges`; a service receives an already-built `[FeatureCommand]` and never learns a queue
+  exists. This is what keeps "what the user wants" from being mistaken for "what the system is".
+- **`PendingChange` is an enum, not `Any`.** A `[FeatureID: Any]` queue forces every read back
+  through a cast, and a mis-cast silently degrades to "no pending change" — the user stages a
+  change, presses Apply, and nothing happens.
+- **Batch output is redirected** (`>/dev/null 2>&1`) so `spctl`, `nvram` and `rm` chatter cannot
+  corrupt marker parsing, and the batch script is built entirely from constants — no user input,
+  URL parameter or runtime-discovered name is ever interpolated.
+- **The appiconset is excluded from the `RosettaStone` sources glob and added under `resources:`.**
+  The glob already matches `Support/AppIcon.appiconset`, so listing it in both places would add the
+  same file to the target twice and fail the XcodeGen run.
+- **Every resize in `generate-icons.sh` passes `-background none -alpha set`.** Without it, ImageMagick
+  flattens transparency against black and leaves a dark box around the glyph in every size — a
+  defect that only shows up on a light wallpaper.
+
+#### Not changed, deliberately
+
+- **The menu-bar left-click, the right-click menu and the `rosettastone://` URL actions still run
+  immediately.** They are shortcuts, not batch configuration. Deferring them would add a step for no
+  benefit, and a queued URL action is worse than useless — it is a *silently dropped* action,
+  because the Shortcut has no way to press Apply.
+- **A pending change is not persisted across launches.** The window is retained, and a half-configured
+  Mac is not worth restoring into a fresh session.
+- **Clear System Cache still requires its confirmation even when URL-driven**, and the warning copy
+  is still one constant shared by the panel sheet, the status-item menu and the URL scheme.
+- **The build does not depend on ImageMagick.** The generated PNGs are committed; the script is a
+  maintenance tool that only runs when the master icon changes.
+
+#### Documentation
+
+- `docs/FEATURES.md` — new **§10 The deferred queue**, with the actual-vs-pending table, the master
+  buttons, a Mermaid batch-execution flowchart, the four batch invariants, the per-feature queue
+  matrix, the three bypass routes and the batch feedback table. **Queued?** added to the summary
+  matrix, and a queue note on each of the eight feature sections.
+- `docs/ARCHITECTURE.md` — **§4 Single-auth batching** with the generated script and a Mermaid
+  sequence diagram of the whole flow; §6 gains *Two layers of state: actual vs pending*, *The one
+  command table* and *App icon pipeline*; two new layering rules.
+- `docs/USER-GUIDE.md` — new **§12 Using the Apply / Cancel buttons** and **§13 Understanding the
+  orange ●**, plus §3.1 on the app icon and five new troubleshooting entries. "Further reading"
+  renumbered to §14.
+- `docs/DECISIONS.md` — **ADR-009** (deferred queue) and **ADR-010** (CC BY-SA 3.0 icon with
+  attribution), each with context, decision, rationale, consequences and alternatives.
+
+#### Verification
+
+- **41 assertions** over `batchScript(for:)` and `parseBatchMarkers(_:commands:)`, run off-macOS
+  from a bare `swiftc`: one marker pair per command, output suppressed, commands joined so one
+  failure cannot abort the batch, no `set -e`, no `&&` chain, inline work contributing no shell,
+  per-command outcomes, **silence treated as failure**, **prefix look-alikes rejected**,
+  **noisy stdout not fabricating successes**, CRLF and padded lines trimmed, result ordering
+  preserved, and `BatchReport` distinguishing failure from cancellation.
+- The Foundation-only model and service layer type-checks clean; the full 23-file tree
+  syntax-checks clean. Remaining `typecheck` errors are pre-existing macOS-only APIs
+  (`sysctlbyname`, `import Darwin`) that cannot resolve off-macOS.
+
 ### Phase 8 — one bundle name; the arch suffix only on DMGs and artifacts
 
 **Installing Rosetta Stone put a chip name in the user's Applications folder.** CI staged each matrix

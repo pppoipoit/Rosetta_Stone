@@ -171,6 +171,159 @@ enum SystemCommands {
         }
     }
 
+    // MARK: - Batched execution (one Authorization dialog for the whole queue)
+
+    /// Prefix for a successful command's marker line in a batch's stdout.
+    static let batchOKPrefix = "RS_OK:"
+
+    /// Prefix for a failed command's marker line.
+    static let batchFailPrefix = "RS_FAIL:"
+
+    /// The per-item outcome of one batch. Ordered, matching the submitted commands.
+    struct BatchResult {
+        let items: [BatchItemResult]
+
+        var isEmpty: Bool { items.isEmpty }
+        var allSucceeded: Bool { items.allSatisfy { $0.succeeded } }
+    }
+
+    /// Runs a whole queue, raising **at most one** macOS password dialog.
+    ///
+    /// This is the whole point of the deferred queue (ADR-009). Before batching, five
+    /// privileged changes meant five `osascript` invocations and five password sheets — the
+    /// user retyped the same password once per row, and each prompt stole focus separately.
+    ///
+    /// ## How it works
+    ///
+    /// 1. Commands are split by `requiresAdmin`.
+    /// 2. The privileged ones are concatenated into **one** shell script, where each command
+    ///    is wrapped so that it always prints exactly one marker line:
+    ///    `if ( cmd ) >/dev/null 2>&1 ; then echo 'RS_OK:x' ; else echo 'RS_FAIL:x' ; fi`.
+    ///    That script runs inside a single `do shell script … with administrator privileges`.
+    /// 3. stdout is parsed for those markers, giving a per-command success/failure.
+    ///    Markers are **exact** matches, so one row can never be mistaken for another.
+    /// 4. Unprivileged commands run separately, without any prompt.
+    ///
+    /// - Returns: `.cancelled` for **every** command when the user dismisses the Authorization
+    ///   dialog — including the unprivileged ones, which then do not run. Dismissing the dialog
+    ///   means "not now" to the whole set, and running half of it would be exactly the
+    ///   half-applied state the queue exists to prevent.
+    static func runBatched(_ commands: [FeatureCommand]) -> BatchResult {
+        guard commands.isEmpty == false else { return BatchResult(items: []) }
+
+        let privileged = commands.filter { $0.requiresAdmin }
+        let unprivileged = commands.filter { $0.requiresAdmin == false }
+
+        var items: [BatchItemResult] = []
+
+        // --- One Authorization dialog for every privileged command -----------------------
+        if privileged.isEmpty == false {
+            let script = batchScript(for: privileged)
+            // The batch lives or dies by its slowest member: a Rosetta 2 install alongside
+            // three toggles must not be cut off at the 30 s default.
+            let timeout = privileged.map { $0.timeout }.max() ?? defaultTimeout
+            let outcome = runAsAdmin(script, timeout: timeout)
+
+            switch outcome {
+            case .cancelled:
+                // The user dismissed the dialog, which is itself the answer. **Nothing in the
+                // batch runs** — including the unprivileged half. Running the LaunchAgent write
+                // here while Gatekeeper silently did not change would produce exactly the
+                // half-applied state the queue exists to prevent: the user said "not now" to
+                // the whole set, so every row reports cancelled and Apply can be pressed again.
+                return BatchResult(items: commands.map {
+                    BatchItemResult(feature: $0.feature, outcome: .cancelled)
+                })
+            case .failure(let message, _):
+                // The elevated shell itself failed (bad AppleScript, launch failure,
+                // timeout). No marker can be trusted, so no privileged row is reported as
+                // succeeded — but the unprivileged ones are independent and still run.
+                items += privileged.map {
+                    BatchItemResult(feature: $0.feature,
+                                    outcome: .failure(message: message, exitCode: -1))
+                }
+            case .success(let output):
+                items += parseBatchMarkers(output, commands: privileged)
+            }
+        }
+
+        // --- Unprivileged commands, no prompt ---------------------------------------------
+        for command in unprivileged {
+            switch command.work {
+            case .inline(let work):
+                items.append(BatchItemResult(feature: command.feature, outcome: work()))
+            case .shell(let script):
+                items.append(BatchItemResult(feature: command.feature,
+                                             outcome: runShell(script, timeout: command.timeout)))
+            }
+        }
+
+        return BatchResult(items: items)
+    }
+
+    /// Builds the single elevated shell script for a batch.
+    ///
+    /// Each command is wrapped so it emits exactly one marker and **cannot** pollute stdout
+    /// with its own output — `spctl`, `nvram` and `rm` all print things, and a stray line
+    /// would corrupt marker parsing.
+    ///
+    /// The `if/then/else` form is used rather than `cmd && echo OK || echo FAIL`: in an `&&`
+    /// chain, a command whose *last* statement fails can emit both markers, which would make
+    /// one row look half-applied.
+    static func batchScript(for commands: [FeatureCommand]) -> String {
+        var lines: [String] = []
+        for command in commands {
+            guard let script = command.shell else { continue }
+            lines.append(
+                "if ( \(script) ) >/dev/null 2>&1 ; "
+                    + "then echo '\(batchOKPrefix)\(command.marker)' ; "
+                    + "else echo '\(batchFailPrefix)\(command.marker)' ; fi"
+            )
+        }
+        // `;` separators keep every line independent: one command's failure must not abort
+        // the rest of the batch, which is what a `set -e` script would do.
+        return lines.joined(separator: " ; ")
+    }
+
+    /// Maps a batch script's stdout back onto per-command outcomes.
+    ///
+    /// A command with **no** marker is treated as a failure, never a success: silence is not
+    /// evidence. That is the same "never trust the exit code" rule the single-command paths
+    /// follow, applied to a multi-command exit code that is always 0.
+    static func parseBatchMarkers(_ output: String,
+                                  commands: [FeatureCommand]) -> [BatchItemResult] {
+        // `components(separatedBy: .newlines)` rather than a hand-rolled `split` closure.
+        // A marker is compared with `==`, so a stray `\r` from a CRLF line ending would turn a
+        // real success into a silent "no result" failure. `.newlines` covers `\n`, `\r\n` and
+        // `\r` in one call, and trimming with `.whitespacesAndNewlines` removes any padding the
+        // shell adds around an `echo`.
+        let lines = output
+            .components(separatedBy: .newlines)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { $0.isEmpty == false }
+
+        var seen: [FeatureID: CommandOutcome] = [:]
+        for line in lines {
+            for command in commands {
+                if line == "\(batchOKPrefix)\(command.marker)" {
+                    seen[command.feature] = .success(output: "")
+                } else if line.hasPrefix("\(batchFailPrefix)\(command.marker)") {
+                    seen[command.feature] = .failure(
+                        message: "\(command.feature.title) could not be applied.",
+                        exitCode: -1)
+                }
+            }
+        }
+
+        return commands.map { command in
+            BatchItemResult(feature: command.feature,
+                            outcome: seen[command.feature]
+                                ?? .failure(
+                                    message: "\(command.feature.title) did not report a result.",
+                                    exitCode: -1))
+        }
+    }
+
     // MARK: - Quoting
 
     /// Wraps `value` in single quotes for `/bin/sh`, escaping embedded quotes as `'\''`.

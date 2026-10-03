@@ -45,6 +45,12 @@ enum Theme {
     static let info = Color(red: 0.55, green: 0.72, blue: 0.95)
     static let warning = Color(red: 1.00, green: 0.76, blue: 0.30)
 
+    /// The orange dot marking a row whose staged value differs from the system (ADR-009).
+    ///
+    /// Orange rather than the accent yellow so it never reads as the yellow **Install** button
+    /// on the Rosetta 2 row — the dot and that button sit on the same panel.
+    static let pending = Color(red: 1.00, green: 0.65, blue: 0.20)
+
     // MARK: - Metrics
 
     static let rowSpacing: CGFloat = 34

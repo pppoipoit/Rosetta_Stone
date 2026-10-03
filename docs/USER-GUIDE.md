@@ -59,6 +59,24 @@ Rosetta Stone opens as a **normal windowed app** with a Dock icon; there is no m
 this default mode. The **Diagnostics…** link in the panel footer is always available. To switch
 to the menu-bar mode, turn **Run at Startup** ON (§6.1).
 
+### 3.1 About the app icon
+
+The icon you see in **Applications** is generated from a single 1024×1024 master image,
+`RosettaStone/Resources/AppIcon.png` — *Rosetta Stone icon* by
+[Abshifflett](https://commons.wikimedia.org/wiki/User:Abshifflett), licensed
+[CC BY-SA 3.0](https://creativecommons.org/licenses/by-sa/3.0). macOS needs that one image in ten
+different sizes, so `scripts/generate-icons.sh` resizes the master into all ten and writes them
+into `RosettaStone/Support/AppIcon.appiconset/`. If you ever want to change the icon, replace the
+master and re-run:
+
+```bash
+brew install imagemagick      # once
+bash scripts/generate-icons.sh
+```
+
+If you installed the app and it shows a **generic icon**, the icon files were not included in the
+build you downloaded. Re-download the DMG rather than trying to fix it in place.
+
 ---
 
 ## 4. First run with Gatekeeper ON
@@ -489,16 +507,115 @@ machine.
 | App does not start at login | Toggle **Run at Startup** off, then on again, then log out and back in. **Diagnostics…** shows whether the login item is installed and whether it is stale. |
 | A Shortcut did nothing | URL actions require **Run at Startup ON** (§9). With the toggle off, the panel opens and says so. In power-user mode, actions perform silently once running — see §9.7. |
 | Gatekeeper did not switch off on macOS 15+ | On Sequoia/Tahoe you must also choose **Anywhere** in System Settings; the app opens the pane and reminds you (§6.2). |
-| Password prompt never appears | Check that a previous `osascript` dialog is not hidden behind another window. Only one privileged action runs at a time. |
-| "Operation not permitted" | You cancelled the prompt, or the command needs root and did not get it. Retry and complete the password prompt. |
+| Password prompt never appears | Check that a previous `osascript` dialog is not hidden behind another window. Only one privileged action runs at a time — and the Apply button commits everything with a **single** prompt (§12). |
+| "Operation not permitted" | You cancelled the prompt, or the command needs root and did not get it. Press **✅ ตกลง** again — cancelling leaves your queue intact (§12.5). |
+| A switch moved but nothing changed | That is the pending dot working as designed: you have **staged** the change. Press **✅ ตกลง** (⌘↩) to apply it, or **❌ ยกเลิก** to discard it (§12, §13). |
+| ✅ ตกลง is greyed out | Nothing is queued. Staging a change that already matches your Mac removes it instead of queueing it, so there is nothing to apply. |
+| Some changes failed | The dialog lists each change with ✅ or ❌. Fix the cause and press **✅ ตกลง** again — failed rows stay queued (§12.5). |
 | Rosetta 2 install fails | You need an internet connection. On macOS 11.0–11.2 the component is not bundled; update to 11.3+ first. |
 | Auto Boot toggle is greyed | Auto Boot works on **Intel MacBooks only**. Three reasons: (1) Apple Silicon — firmware owns the setting and NVRAM is reset every cold boot; (2) a desktop — there is no lid; (3) the model could not be read, and the app fails safe. The row itself names your reason, and hovering repeats it (§6.4). **Diagnostics…** reports *Auto Boot supported* and *Auto Boot lock reason*. |
 | Gatekeeper toggle keeps flipping back | Your Mac is managed by an organisation profile. That profile wins. |
-| Finder vanished | It restarted after toggling Hidden Files. It comes back on its own within a second. |
+| Finder vanished | It restarted after toggling Hidden Files. It comes back on its own within a second. In a batch it restarts **once** for the whole queue (§12). |
+| The app icon looks generic | The icon files were not in the build you downloaded. Re-download the DMG (§3.1). |
 
 ---
 
-## 12. Further reading
+## 12. Using the Apply / Cancel buttons
+
+Since Phase 9 the panel **does not act when you click a switch**. It records what you asked for
+and waits.
+
+### 12.1 The workflow
+
+1. **Flip or press whatever you want.** A switch moves, a button lights up, and an orange ●
+   appears beside the row title. **Nothing on your Mac has changed yet.**
+2. **Look at the bottom of the panel.** The count on **✅ ตกลง** tells you how many changes are
+   waiting, and each marked row is visible above.
+3. **Press ✅ ตกลง** (or **⌘↩**) to apply them all at once. You are asked for your password
+   **once**, no matter how many of the queued changes need it.
+4. **Or press ❌ ยกเลิก** to throw the queue away. This changes nothing on your Mac and asks for
+   no confirmation, because nothing was changed.
+
+Both buttons are greyed out while the queue is empty — that is how you tell the panel is waiting
+on you.
+
+### 12.2 Why it works this way
+
+Configuring a Mac usually means changing several things at once. Before, each switch ran its
+command the instant you touched it, so four privileged changes meant **four password dialogs** —
+the same password typed four times, with focus stolen four times. Now you set everything up, then
+type your password once.
+
+### 12.3 Which actions are queued
+
+All eight panel rows are queued, including the one-shot buttons (Rosetta 2, Spotlight, DNS Flush,
+Clear System Cache). Pressing **Install** or **Cache** does not start the work; it queues it and
+shows you the warning first.
+
+Three things deliberately **do not** queue, and run the instant you trigger them:
+
+| Action | Why |
+|--------|-----|
+| **Left-clicking the menu-bar icon** | One deliberate toggle. It raises one password prompt, exactly as before. |
+| **The right-click menu** | These are shortcuts, not a batch. |
+| **Apple Shortcuts / `rosettastone://` URLs** | These can fire at any time, often with no panel on screen. Queuing a change nobody will press Apply for would silently do nothing. |
+
+### 12.4 Confirmations still happen first
+
+The risky actions still ask *before* you queue them, not after:
+
+- **Auto Boot** — warns that the firmware setting survives reboots and upgrades.
+- **Rosetta 2** — warns it can take several minutes and needs a network.
+- **Clear System Cache** — the full Thai + English warning that `/Library/Caches` is being emptied.
+
+So the sequence is always: *warn → queue → one password prompt → apply*.
+
+### 12.5 What you see afterwards
+
+| Situation | What happens |
+|-----------|--------------|
+| Everything worked | A green banner: **สำเร็จทั้งหมด** · N change(s) applied. The dots disappear. |
+| Something failed | A dialog listing **every** change with a ✅ or ❌, so you can see which ones worked. Failed rows keep their orange ● and stay queued. |
+| You dismissed the password prompt | Nothing at all. The queue is untouched — press ✅ again when you are ready. |
+
+On macOS 15 or later, successfully turning Gatekeeper off still opens System Settings so you can
+choose **Anywhere** (§6.2). That step is skipped if the command failed or you cancelled.
+
+---
+
+## 13. Understanding the orange ● (pending dot)
+
+### 13.1 What it means
+
+The ● sits beside a row title when that row holds a change you have **staged but not applied**.
+
+It answers one question: *"what is about to change if I press ✅?"*
+
+| You see | It means |
+|---------|----------|
+| ● next to a title | A change is waiting. The switch shows what you asked for; your Mac still shows the old value. |
+| No ● | The switch reflects reality. Either nothing is queued, or what is queued matches what the system already reports. |
+
+### 13.2 The dot has a precise meaning
+
+It appears exactly when **what you asked for ≠ what your Mac is doing right now**. Two consequences
+worth knowing:
+
+- **Toggling a switch back removes the dot.** If you flip a switch and flip it straight back, the
+  pending change is deleted rather than stored — a ● for a change that does not exist would be a lie.
+- **After applying, the dot disappears only if it worked.** Rosetta Stone re-reads the real state
+  of your Mac after every change rather than trusting that the command said OK. A row that shows
+  ● after a failed batch really did not change.
+
+### 13.3 It is not an error
+
+An orange ● means *"pending"*, not *"broken"*. Nothing is wrong and nothing is in progress — you
+simply have not pressed ✅ yet. It clears on its own once you apply, or immediately if you press
+❌ ยกเลิก.
+
+---
+
+## 14. Further reading
 
 | Document | For |
 |----------|-----|

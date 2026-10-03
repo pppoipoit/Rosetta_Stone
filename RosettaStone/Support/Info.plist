@@ -13,6 +13,13 @@
 	<string>RosettaStone</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
+	<!-- ==== App icon ==== -->
+	<!-- Resolves to RosettaStone.app/Contents/Resources/AppIcon.icns, which actool
+	     compiles from RosettaStone/Support/AppIcon.appiconset (see project.yml's
+	     ASSETCATALOG_COMPILER_APPICON_NAME). The 10 source PNGs are generated from
+	     RosettaStone/Resources/AppIcon.png by scripts/generate-icons.sh and are
+	     committed, so a plain xcodebuild never needs ImageMagick.
+	     Artwork: "Rosetta Stone icon" by Abshifflett, CC BY-SA 3.0 (README §Credits). -->
 	<key>CFBundleIconFile</key>
 	<string>AppIcon</string>
 	<key>CFBundleInfoDictionaryVersion</key>

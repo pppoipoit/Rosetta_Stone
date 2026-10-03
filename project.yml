@@ -57,9 +57,27 @@ targets:
         # Info.plist and the entitlements file are build *settings inputs*, not
         # bundle resources. Excluding them here stops XcodeGen copying a second
         # copy of each into RosettaStone.app/Contents/Resources.
+        #
+        # The appiconset is excluded here **because** it is added under `resources`
+        # below. The `RosettaStone` glob already matches Support/AppIcon.appiconset,
+        # so listing it in both places would add the same file to the target twice and
+        # XcodeGen would fail with a duplicate-build-file error. One entry, one copy.
         excludes:
           - "Support/Info.plist"
           - "Support/RosettaStone.entitlements"
+          - "Support/AppIcon.appiconset"
+
+    # The app icon lives in its own asset catalog under Support/, listed separately
+    # so its resource phase is explicit and reviewable.
+    # `ASSETCATALOG_COMPILER_APPICON_NAME` (below) makes actool compile it into
+    # RosettaStone.app/Contents/Resources/AppIcon.icns, which is exactly what
+    # CFBundleIconFile=AppIcon resolves to.
+    #
+    # The icon is NOT placed inside Assets.xcassets: that catalog is already copied
+    # wholesale by the sources glob, and a second appiconset named AppIcon would make
+    # actool report a duplicate definition.
+    resources:
+      - path: RosettaStone/Support/AppIcon.appiconset
 
     settings:
       base:
@@ -97,8 +115,11 @@ targets:
         COMBINE_HIDPI_IMAGES: YES
         ENABLE_USER_SCRIPT_SANDBOXING: NO
         # --- Resources ----------------------------------------------------
-        # Assets.xcassets holds the placeholder catalogue; naming the icon set is
-        # harmless when the set exists and ignored when it does not.
+        # Names the app-icon set actool should compile from
+        # Support/AppIcon.appiconset into Contents/Resources/AppIcon.icns,
+        # which is what CFBundleIconFile=AppIcon resolves to.
+        # Assets.xcassets is a separate catalogue and holds only the
+        # status-bar glyph (StatusBarIcon.imageset).
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
 
     scheme:

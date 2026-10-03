@@ -176,6 +176,107 @@ struct QuietLinkButtonStyle: ButtonStyle {
     }
 }
 
+/// The orange dot that marks a row as **staged but not yet applied** (ADR-009).
+///
+/// Drawn as a `Circle` rather than a text bullet so it is a crisp dot at every scale and
+/// carries no font dependency. Its meaning is "this row differs from the system right now",
+/// which is exactly the pending-vs-actual comparison `ContentView` makes.
+struct PendingDot: View {
+
+    var size: CGFloat = 7
+
+    var body: some View {
+        Circle()
+            .fill(Theme.pending)
+            .frame(width: size, height: size)
+            // A faint halo so the dot stays legible against both gradient ends.
+            .shadow(color: Theme.pending.opacity(0.55), radius: 2)
+            .accessibilityIdentifier("pending-dot")
+    }
+}
+
+/// The two master buttons that commit or discard the queue.
+///
+/// Disabled while the queue is empty, so they cannot be pressed into a no-op — and so the
+/// panel teaches the rule by showing that Apply is unavailable until something is staged.
+struct ApplyBar: View {
+
+    /// Number of staged rows, shown as the count on the Apply button.
+    let pendingCount: Int
+
+    /// True while a batch is in flight. Greys out both buttons.
+    let isBusy: Bool
+
+    let onCancel: () -> Void
+    let onApply: () -> Void
+
+    private var isDisabled: Bool { pendingCount == 0 || isBusy }
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Button("❌ ยกเลิก") { onCancel() }
+                .buttonStyle(SecondaryButtonStyle())
+                .frame(maxWidth: .infinity)
+                .disabled(isDisabled)
+
+            Button(applyTitle) { onApply() }
+                .buttonStyle(AccentButtonStyle())
+                .frame(maxWidth: .infinity)
+                .disabled(isDisabled)
+                // ⌘↩ applies the queue. `keyboardShortcut` is macOS 10.15+, so it is safe on
+                // the deployment floor; the modifiers overload is macOS 11+, which is why the
+                // `.return`-only form is used via the availability-checked helper below.
+                .modifier(ConditionalCommandReturnShortcut())
+        }
+        .opacity(isDisabled ? 0.45 : 1)
+        .padding(.top, 12)
+    }
+
+    private var applyTitle: String {
+        pendingCount == 1 ? "✅ ตกลง (1)" : "✅ ตกลง (\(pendingCount))"
+    }
+}
+
+/// Applies ⌘↩ on macOS 11+, and ↵ on macOS 10.15.
+///
+/// `keyboardShortcut(_:modifiers:)` is macOS 11+; the single-argument
+/// `keyboardShortcut(_:)` is 10.11+. Keeping the floor working means the modifier form has to
+/// sit behind an availability check, which is why this is a separate `ViewModifier` rather
+/// than an inline call in `ApplyBar`.
+struct ConditionalCommandReturnShortcut: ViewModifier {
+
+    func body(content: Content) -> some View {
+        if #available(macOS 11.0, *) {
+            content.keyboardShortcut(.return, modifiers: .command)
+        } else {
+            content.keyboardShortcut(.return)
+        }
+    }
+}
+
+/// A quiet, outlined button — used for the master **Cancel** action.
+///
+/// Deliberately not a pill: it is the destructive half of the pair, and its outline keeps it
+/// visually subordinate to the accent Apply button next to it.
+struct SecondaryButtonStyle: ButtonStyle {
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.system(size: 13, weight: .semibold))
+            .foregroundColor(Theme.primaryText)
+            .padding(.vertical, 8)
+            .background(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(Color.white.opacity(configuration.isPressed ? 0.14 : 0.07))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .strokeBorder(Theme.buttonBorder, lineWidth: 1)
+            )
+            .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+    }
+}
+
 /// Small, non-blocking feedback line shown under the rows.
 ///
 /// Every action ends in exactly one of success / cancelled / failed, so this never has to

@@ -11,7 +11,11 @@ import Foundation
 extension FeatureCoordinator {
 
     /// Paths to the tools used by the write paths.
-    private enum Tool {
+    ///
+    /// Internal rather than `private` because `FeatureCoordinator.command(for:pending:)` — the
+    /// deferred-queue builder — needs the same constants. One table of paths means the queued
+    /// route and the immediate routes cannot drift to different binaries.
+    enum Tool {
         static let spctl = "/usr/sbin/spctl"
         static let defaults = "/usr/bin/defaults"
         static let killall = "/usr/bin/killall"
@@ -24,13 +28,45 @@ extension FeatureCoordinator {
 
     // MARK: - 1. Run at Startup  (admin)
 
+    /// Runs one staged-style change immediately, through the **same** command table the
+    /// deferred queue uses (`command(for:pending:)`).
+    ///
+    /// This is why there is exactly one place that knows what `spctl --master-disable` looks
+    /// like. The panel stages a change and the queue batches it; the menu bar and the URL
+    /// scheme run one immediately — and all four routes build their shell from one function,
+    /// so they cannot drift to different commands.
+    ///
+    /// The macOS 15+ Gatekeeper follow-up is deliberately **not** fired from here: it belongs
+    /// to the write path's caller, because the batch needs to fire it only after parsing
+    /// markers, and `setGatekeeper` fires it itself.
+    private func runImmediately(_ feature: FeatureID,
+                                pending: PendingChange,
+                                successMessage: String?) {
+        perform(feature,
+                successMessage: successMessage,
+                work: {
+                    guard let command = self.command(for: feature, pending: pending) else {
+                        return .failure(message: "\(feature.title) is not available on this Mac.",
+                                        exitCode: -1)
+                    }
+                    switch command.work {
+                    case .inline(let work):
+                        return work()
+                    case .shell(let script):
+                        return command.requiresAdmin
+                            ? SystemCommands.runAsAdmin(script, timeout: command.timeout)
+                            : SystemCommands.runShell(script, timeout: command.timeout)
+                    }
+                })
+    }
+
     /// Installs or removes `~/Library/LaunchAgents/com.rosettastone.helper.plist`.
     func setRunAtStartup(_ enabled: Bool) {
-        perform(.runAtStartup,
-                successMessage: enabled
-                    ? "Rosetta Stone will start automatically at every login."
-                    : "The login item has been removed.",
-                work: { enabled ? self.startupManager.install() : self.startupManager.remove() })
+        runImmediately(.runAtStartup,
+                       pending: .toggle(enabled),
+                       successMessage: enabled
+                           ? "Rosetta Stone will start automatically at every login."
+                           : "The login item has been removed.")
     }
 
     // MARK: - 2. Gatekeeper  (admin)
@@ -47,6 +83,8 @@ extension FeatureCoordinator {
     /// (`GatekeeperPolicy`). Re-enabling (`--master-enable`) is one step everywhere and
     /// never triggers the confirmation.
     func setGatekeeper(bypassed: Bool) {
+        // Not `runImmediately`: `writeGatekeeper` owns the macOS 15+ System Settings
+        // follow-up, which must run after the command succeeds and never after a failure.
         perform(.gatekeeper,
                 successMessage: bypassed
                     ? "Gatekeeper is now bypassed. Re-enable it when you no longer need it."
@@ -84,15 +122,22 @@ extension FeatureCoordinator {
     /// `killall Finder` restarts Finder; the desktop and Dock blink out and back. Expected,
     /// documented in the panel, and harmless to this app's own window.
     func setHiddenFiles(shown: Bool) {
+        // `killall Finder` comes from the command table's `batchPostStep` so the queued and
+        // immediate routes restart Finder identically — and so a batch can run it once for
+        // the whole queue instead of once per row.
         perform(.hiddenFiles,
                 successMessage: shown
                     ? "Hidden files are now visible in Finder."
                     : "Hidden files are now hidden.",
-                work: {
-                    SystemCommands.runShell("""
-                    \(Tool.defaults) write com.apple.finder AppleShowAllFiles \(shown ? "YES" : "NO") && \
-                    \(Tool.killall) Finder
-                    """)
+                work: { [weak self] in
+                    guard let command = self?.command(for: .hiddenFiles, pending: .toggle(shown)),
+                          let script = command.shell else {
+                        return .failure(message: "Could not build the hidden-files command.", exitCode: -1)
+                    }
+                    let outcome = SystemCommands.runShell(script)
+                    guard outcome.isSuccess, let postStep = command.batchPostStep else { return outcome }
+                    _ = SystemCommands.runShell(postStep)
+                    return outcome
                 })
     }
 
@@ -128,11 +173,9 @@ extension FeatureCoordinator {
             return
         }
 
-        perform(.autoBoot,
-                successMessage: enabled ? "Auto boot is enabled." : "Auto boot is disabled.",
-                work: {
-                    SystemCommands.runAsAdmin("\(Tool.nvram) AutoBoot=\(enabled ? "%03" : "%00")")
-                })
+        runImmediately(.autoBoot,
+                       pending: .toggle(enabled),
+                       successMessage: enabled ? "Auto boot is enabled." : "Auto boot is disabled.")
     }
 
     // MARK: - Toggles used by the URL scheme and the menu-bar menu
@@ -167,6 +210,9 @@ extension FeatureCoordinator {
     }
 
     /// Flips hidden-file visibility in Finder.
+    ///
+    /// Shared with `setHiddenFiles(shown:)` through the command table, so the menu-bar item
+    /// and a queued batch write byte-identical commands.
     func toggleHiddenFiles() {
         perform(.hiddenFiles,
                 successMessage: nil,
@@ -179,10 +225,14 @@ extension FeatureCoordinator {
                             ? "Hidden files are now visible in Finder."
                             : "Hidden files are now hidden.",
                         style: .success)
-                    return SystemCommands.runShell("""
-                    \(Tool.defaults) write com.apple.finder AppleShowAllFiles \(target ? "YES" : "NO") && \
-                    \(Tool.killall) Finder
-                    """)
+                    guard let command = self.command(for: .hiddenFiles, pending: .toggle(target)),
+                          let script = command.shell else {
+                        return .failure(message: "Could not build the hidden-files command.", exitCode: -1)
+                    }
+                    let outcome = SystemCommands.runShell(script)
+                    guard outcome.isSuccess, let postStep = command.batchPostStep else { return outcome }
+                    _ = SystemCommands.runShell(postStep)
+                    return outcome
                 })
     }
 
@@ -198,16 +248,15 @@ extension FeatureCoordinator {
                    style: .failure)
             return
         }
-        perform(.rosetta2,
-                successMessage: "Rosetta 2 is installed.",
-                work: {
-                    guard SystemStateReader.isRosettaInstalled() == false else {
-                        return .success(output: "Already installed.")
-                    }
-                    return SystemCommands.runAsAdmin(
-                        "\(Tool.softwareupdate) --install-rosetta --agree-to-license",
-                        timeout: SystemCommands.longTimeout)
-                })
+        // Already on disk: succeed without ever raising a password dialog.
+        guard SystemStateReader.isRosettaInstalled() == false else {
+            perform(.rosetta2, successMessage: nil,
+                    work: { .success(output: "Already installed.") })
+            return
+        }
+        runImmediately(.rosetta2,
+                       pending: .action,
+                       successMessage: "Rosetta 2 is installed.")
     }
 
     // MARK: - 6. Spotlight Rebuild  (admin)
@@ -215,9 +264,9 @@ extension FeatureCoordinator {
     /// Erases the Spotlight index for the startup volume. `mdutil -E /` returns as soon
     /// as the erase is scheduled — the rebuild itself continues for minutes afterwards.
     func rebuildSpotlight() {
-        perform(.spotlightRebuild,
-                successMessage: "Spotlight is rebuilding its index. This takes several minutes.",
-                work: { SystemCommands.runAsAdmin("\(Tool.mdutil) -E /") })
+        runImmediately(.spotlightRebuild,
+                       pending: .action,
+                       successMessage: "Spotlight is rebuilding its index. This takes several minutes.")
     }
 
     // MARK: - 7. DNS Flush  (admin)
@@ -228,14 +277,9 @@ extension FeatureCoordinator {
     /// A missing `mDNSResponder` exits non-zero; "cache flushed" is the success criterion,
     /// so that error is suppressed.
     func flushDNS() {
-        perform(.dnsFlush,
-                successMessage: "The DNS cache has been flushed.",
-                work: {
-                    SystemCommands.runAsAdmin("""
-                    \(Tool.dscacheutil) -flushcache && \
-                    (\(Tool.killall) -HUP mDNSResponder 2>/dev/null || true)
-                    """)
-                })
+        runImmediately(.dnsFlush,
+                       pending: .action,
+                       successMessage: "The DNS cache has been flushed.")
     }
 
     // MARK: - 8. Clear System Cache  (admin)
@@ -247,8 +291,8 @@ extension FeatureCoordinator {
     /// The `*` glob is intentional: it does not match dotfiles, and switching to a form
     /// that does would risk removing the directory's own metadata.
     func clearSystemCache() {
-        perform(.clearSystemCache,
-                successMessage: "The system cache has been cleared. Caches rebuild as apps need them.",
-                work: { SystemCommands.runAsAdmin("\(Tool.rm) -rf /Library/Caches/*") })
+        runImmediately(.clearSystemCache,
+                       pending: .action,
+                       successMessage: "The system cache has been cleared. Caches rebuild as apps need them.")
     }
 }

@@ -35,20 +35,26 @@ Design constraints that shape everything:
 
 ## Features
 
-| # | Feature | Control | Command | Admin? | Availability |
-|---|---------|---------|---------|--------|--------------|
-| 1 | Run at Startup | Toggle (mode switch) | `create` / `remove` `~/Library/LaunchAgents/com.rosettastone.helper.plist` | **Yes** (admin) | All |
-| 2 | Gatekeeper | Toggle | `spctl --master-disable` / `spctl --master-enable` (macOS 15+: confirm “Anywhere” in System Settings) | **Yes** (admin) | All |
-| 3 | Hidden Files | Toggle (ON = show) | `defaults write com.apple.finder AppleShowAllFiles YES/NO` + `killall Finder` | No | All |
-| 4 | Auto Boot | Toggle | `nvram AutoBoot=%03` / `nvram AutoBoot=%00` | **Yes** (admin) | Intel MacBook only; greyed + lock icon on Apple Silicon *and* on desktops, with the reason shown inline |
-| 5 | Rosetta 2 | Install button | `softwareupdate --install-rosetta --agree-to-license` | **Yes** (admin) | Apple Silicon only; greyed on Intel; installed-check via `/usr/libexec/oah/libRosettaRuntime` |
-| 6 | Spotlight Rebuild | Button | `mdutil -E /` | **Yes** (admin) | All |
-| 7 | DNS Flush | Button | `dscacheutil -flushcache` + `killall -HUP mDNSResponder` | **Yes** (admin) | All |
-| 8 | Clear System Cache | Button | `rm -rf /Library/Caches/*` | **Yes** (admin) | All |
+| # | Feature | Control | Command | Admin? | Queued? | Availability |
+|---|---------|---------|---------|--------|---------|--------------|
+| 1 | Run at Startup | Toggle (mode switch) | `create` / `remove` `~/Library/LaunchAgents/com.rosettastone.helper.plist` | **Yes** (admin) | ✅ | All |
+| 2 | Gatekeeper | Toggle | `spctl --master-disable` / `spctl --master-enable` (macOS 15+: confirm “Anywhere” in System Settings) | **Yes** (admin) | ✅ | All |
+| 3 | Hidden Files | Toggle (ON = show) | `defaults write com.apple.finder AppleShowAllFiles YES/NO` + `killall Finder` | No | ✅ | All |
+| 4 | Auto Boot | Toggle | `nvram AutoBoot=%03` / `nvram AutoBoot=%00` | **Yes** (admin) | ✅ | Intel MacBook only; greyed + lock icon on Apple Silicon *and* on desktops, with the reason shown inline |
+| 5 | Rosetta 2 | Install button | `softwareupdate --install-rosetta --agree-to-license` | **Yes** (admin) | ✅ | Apple Silicon only; greyed on Intel; installed-check via `/usr/libexec/oah/libRosettaRuntime` |
+| 6 | Spotlight Rebuild | Button | `mdutil -E /` | **Yes** (admin) | ✅ | All |
+| 7 | DNS Flush | Button | `dscacheutil -flushcache` + `killall -HUP mDNSResponder` | **Yes** (admin) | ✅ | All |
+| 8 | Clear System Cache | Button | `rm -rf /Library/Caches/*` | **Yes** (admin) | ✅ | All |
 
 > Every command in the **Admin?** column marked *Yes* is executed with administrator privileges
 > via `osascript -e '... with administrator privileges'` and therefore raises a macOS
 > authentication dialog. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#5-privilege-escalation-strategy).
+
+> **Queued?** ✅ means the panel stages the change instead of running it. Pressing **✅ ตกลง**
+> (⌘↩) commits the whole queue with **one** password dialog for every privileged row;
+> **❌ ยกเลิก** discards it. An **orange ●** beside a row title marks it as staged but not
+> yet applied. Menu-bar clicks and `rosettastone://` URL actions bypass the queue and run
+> immediately, because they are shortcuts rather than batch configuration.
 
 ### UI layout (row order)
 
@@ -59,10 +65,13 @@ Hidden Files        [ toggle ]
 Auto Boot           [ lock ]  /  [ toggle ]     <- Intel MacBook only
 Rosetta 2           [ Install ]                 <- Apple Silicon only
 Quick Tools         [ Spotlight ] [ DNS ] [ Cache ]
+------------------ status banner ------------------
+                   [ ❌ ยกเลิก ] [ ✅ ตกลง ]  <- master buttons, ⌘↩
 ```
 
 Dark theme throughout. The **Quick Tools** block is a 3-column grid of transient action buttons —
-none of them hold state.
+none of them hold state. Rows carrying an **orange ●** are staged: the switch already shows
+what you asked for, but nothing has changed on the Mac yet.
 
 Full behavioural detail, per-feature command strings, and edge cases: **[docs/FEATURES.md](docs/FEATURES.md)**.
 
@@ -286,12 +295,12 @@ rosetta-stone/
 ├── tests/                 MacProfileTests.swift — 39-assertion harness, runnable off-macOS
 ├── RosettaStone/          Swift sources
 │   ├── App/               main.swift, RosettaStoneApp, AppDelegate
-│   ├── Models/            FeatureID, AppMode, CommandResult
-│   ├── Resources/         Assets.xcassets
+│   ├── Models/            FeatureID, AppMode, CommandResult, DeferredChange
+│   ├── Resources/         Assets.xcassets (status-bar glyph), AppIcon.png (master icon)
 │   ├── Services/          SystemCommands, FeatureCoordinator(+Actions), StartupManager,
 │   │                      SystemStateReader, CPUArchitecture, MacProfile, URLActionRouter,
 │   │                      GatekeeperPolicy, Trace
-│   ├── Support/           Info.plist, RosettaStone.entitlements
+│   ├── Support/           Info.plist, RosettaStone.entitlements, AppIcon.appiconset
 │   └── Views/
 │       ├── Main/          ContentView, Components, Theme
 │       └── MenuBar/       MenuBarController, StatusItemToast, DiagnosticsPanel
@@ -310,6 +319,20 @@ See the repository's `LICENSE` file.
 ---
 
 ## 🎨 Credits
+
+### App icon
+
+**App icon:** [Rosetta Stone icon](https://commons.wikimedia.org/wiki/File:Rosetta_Stone_icon.png)
+by [Abshifflett](https://commons.wikimedia.org/wiki/User:Abshifflett),
+[CC BY-SA 3.0](https://creativecommons.org/licenses/by-sa/3.0)
+
+The ten icon sizes in `RosettaStone/Support/AppIcon.appiconset/` are generated from the
+1024×1024 master at `RosettaStone/Resources/AppIcon.png` by
+[`scripts/generate-icons.sh`](scripts/generate-icons.sh). Because CC BY-SA is a
+copyleft/share-alike licence, any redistribution of Rosetta Stone must keep this
+attribution and license the icon under CC BY-SA 3.0 (ADR-007).
+
+### Development
 
 Crafted with ❤️ by
 

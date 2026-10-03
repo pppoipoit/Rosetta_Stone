@@ -14,16 +14,20 @@ Notation used throughout this document:
 
 ## Summary matrix
 
-| # | Feature | UI control | Admin? | Intel x64 | Apple Silicon arm64 |
-|---|---------|------------|--------|-----------|---------------------|
-| 1 | Run at Startup | Toggle | **Yes** (admin) | ✅ Available | ✅ Available |
-| 2 | Gatekeeper | Toggle | **Yes** (admin) | ✅ Available | ✅ Available |
-| 3 | Hidden Files | Toggle (ON = show) | No | ✅ Available | ✅ Available |
-| 4 | Auto Boot | Toggle | **Yes** (admin) | ✅ Available | ⛔ Greyed + lock icon |
-| 5 | Rosetta 2 | Install button | **Yes** (admin) | ⛔ Greyed | ✅ Available |
-| 6 | Spotlight Rebuild | Button | **Yes** (admin) | ✅ Available | ✅ Available |
-| 7 | DNS Flush | Button | **Yes** (admin) | ✅ Available | ✅ Available |
-| 8 | Clear System Cache | Button | **Yes** (admin) | ✅ Available | ✅ Available |
+| # | Feature | UI control | Admin? | Queued? | Intel x64 | Apple Silicon arm64 |
+|---|---------|------------|--------|---------|-----------|---------------------|
+| 1 | Run at Startup | Toggle | **Yes** (admin) | ✅ | ✅ Available | ✅ Available |
+| 2 | Gatekeeper | Toggle | **Yes** (admin) | ✅ | ✅ Available | ✅ Available |
+| 3 | Hidden Files | Toggle (ON = show) | No | ✅ | ✅ Available | ✅ Available |
+| 4 | Auto Boot | Toggle | **Yes** (admin) | ✅ | ✅ Available | ⛔ Greyed + lock icon |
+| 5 | Rosetta 2 | Install button | **Yes** (admin) | ✅ | ⛔ Greyed | ✅ Available |
+| 6 | Spotlight Rebuild | Button | **Yes** (admin) | ✅ | ✅ Available | ✅ Available |
+| 7 | DNS Flush | Button | **Yes** (admin) | ✅ | ✅ Available | ✅ Available |
+| 8 | Clear System Cache | Button | **Yes** (admin) | ✅ | ✅ Available | ✅ Available |
+
+**Queued?** describes the **panel** only: a ✅ row is staged and committed by the master
+**✅ ตกลง** button. The menu-bar controls and the `rosettastone://` URL scheme bypass the queue
+and run immediately — see §10.5.
 
 ### Privilege matrix
 
@@ -41,6 +45,9 @@ Notation used throughout this document:
 ---
 
 ## 1. Run at Startup
+
+> **Queue:** ✅ Yes — staged in the panel and committed by **✅ ตกลง**. Batched as inline work
+> (a `FileManager` write, not a shell command), so it never prompts for a password.
 
 ### Purpose
 Install or remove a per-user `LaunchAgent` so Rosetta Stone is automatically relaunched at every
@@ -136,6 +143,11 @@ additional, explicit signal used by the login launch.
 
 ## 2. Gatekeeper
 
+> **Queue:** ✅ Yes in the panel. ❌ No (immediate) for the menu-bar left-click and the
+> `rosettastone://toggle-gatekeeper` URL action — both run at once with a single auth prompt.
+> On macOS 15+, System Settings is opened only **after** a successful batch, never after a
+> failure or a cancellation.
+
 ### Purpose
 Toggle macOS Gatekeeper's *master switch* between enforcing and disabled. Useful when a
 developer needs to run an unsigned or unnotarized tool (a Homebrew cask, an internal build, a
@@ -226,6 +238,10 @@ spctl --status
 
 ## 3. Hidden Files
 
+> **Queue:** ✅ Yes in the panel. ❌ No (immediate) for the menu-bar item and the
+> `rosettastone://toggle-hidden-files` URL action.
+> `killall Finder` runs **once per batch**, after the write succeeded — not once per row.
+
 ### Purpose
 Show or hide dotfiles (`.git`, `.env`, `.DS_Store`, …) in Finder. Conventionally the
 pathologist's toggle — the single most-used hidden macOS setting.
@@ -278,6 +294,10 @@ Readable **without** elevation. This is the only feature that never prompts for 
 ---
 
 ## 4. Auto Boot
+
+> **Queue:** ✅ Yes. Intel MacBook only, and the rule is re-checked at **apply** time: a change
+> staged on a row that later became unavailable is refused rather than written to firmware.
+> The NVRAM warning is shown at **stage** time, before any password prompt.
 
 ### Purpose
 Control whether the Mac powers on automatically when the power is restored or the user presses
@@ -369,6 +389,11 @@ carries a reason** — both as the row subtitle and as the hover tooltip.
 
 ## 5. Rosetta 2
 
+> **Queue:** ✅ Yes. The "may take several minutes and needs a network connection" warning is
+> shown at **stage** time — the user learns what they are queuing *before* the password prompt.
+> In a batch this row carries the 900 s timeout, so a slow install is never cut off by the
+> 30 s default. ❌ No (immediate) for the menu-bar item and the URL action.
+
 ### Purpose
 Install Apple's Rosetta 2 translation environment on Apple Silicon, allowing Intel-only
 applications and command-line tools to run natively. One-time install; the app only needs to
@@ -414,6 +439,9 @@ ls /usr/libexec/oah/libRosettaRuntime
 
 ## 6. Spotlight Rebuild
 
+> **Queue:** ✅ Yes. ❌ No (immediate) for the menu-bar item and the
+> `rosettastone://rebuild-spotlight` URL action.
+
 ### Purpose
 Force macOS Spotlight to discard and rebuild its search index for the startup volume. Fixes
 "Spotlight can't find X" after a mass rename, an OS migration, or an external-drive reshuffle.
@@ -454,6 +482,9 @@ nothing to disable in the UI beyond the in-flight state.
 
 ## 7. DNS Flush
 
+> **Queue:** ✅ Yes. ❌ No (immediate) for the menu-bar item and the
+> `rosettastone://flush-dns` URL action.
+
 ### Purpose
 Clear the DNS resolver cache and restart the `mDNSResponder` (multicast DNS) daemon so the Mac
 immediately re-resolves hostnames. The standard fix for "the network is up but nothing loads"
@@ -493,6 +524,10 @@ None — transient action button with no persistent state.
 ---
 
 ## 8. Clear System Cache
+
+> **Queue:** ✅ Yes. The confirmation dialog is raised at **stage** time — before the password
+> prompt — and remains *additional* to it, never a replacement. ❌ No (immediate) for the
+> menu-bar item and the `rosettastone://clear-cache` URL action, both of which confirm too.
 
 ### Purpose
 Delete the contents of the shared system cache directory at `/Library/Caches/`. The blunt
@@ -609,6 +644,85 @@ silently ignored, exactly as it is from the panel.
 
 ---
 
+## 10. The deferred queue (Apply / Cancel)
+
+Phase 9 changed **when** the panel acts, not **what** it can do. Every panel row is now a staging
+area: pressing a switch records an intent, and two master buttons at the bottom of the panel
+commit or discard the whole set.
+
+### 10.1 Actual state vs pending state
+
+Two different values exist for every row, and keeping them apart is the entire mechanism:
+
+| | Meaning | Source | Survives a state re-read? |
+|---|---------|--------|---------------------------|
+| **Actual state** | What the system really is right now | `SystemStateReader` — `spctl`, `defaults`, `nvram`, the plist on disk, the Rosetta runtime probe | Yes — it is re-read after **every** write |
+| **Pending state** | What the user asked for in this session | `ContentView.pendingChanges`, in memory only | No — it is discarded when the window's view is recreated |
+
+The two rules that follow from this:
+
+1. **The switch shows the pending value**, because that is what the user just asked for and
+   hiding it would make the panel lie about their own action.
+2. **The orange ● marks the disagreement.** It is drawn beside the row title whenever a pending
+   entry exists. An entry that equals the actual state is *removed* rather than stored, so a
+   switch toggled on and then back off leaves no dot behind.
+
+### 10.2 The master buttons
+
+| Button | Shortcut | Enabled when | Effect |
+|--------|----------|--------------|--------|
+| **❌ ยกเลิก** | — | Queue is non-empty and nothing is in flight | Discards every pending entry. **Runs no command** and raises no confirmation — nothing was changed, so there is nothing to confirm. |
+| **✅ ตกลง** | ⌘↩ (macOS 11+); ↩ on 10.15 | Queue is non-empty and nothing is in flight | Builds one command per pending row and commits them as a single batch. |
+
+Both are disabled whenever the queue is empty, which is what teaches the rule: Apply is not
+available until something is staged.
+
+### 10.3 Batch execution
+
+Pressing ✅ commits the queue through `SystemCommands.runBatched`:
+
+```mermaid
+flowchart TD
+    A[User presses ✅ ตกลง] --> B[ContentView builds FeatureCommand<br/>per pending row, in fixed row order]
+    B --> C[FeatureCoordinator.applyBatch<br/>takes the single-operation lock]
+    C --> D{Any requiresAdmin?}
+    D -- Yes --> E[Concatenate privileged commands<br/>into ONE shell script]
+    E --> F[Each wrapped as:<br/>if cmd then echo RS_OK:marker<br/>else echo RS_FAIL:marker]
+    F --> G[ONE osascript:<br/>do shell script … with administrator privileges]
+    G --> H[Parse stdout for exact markers]
+    H --> I[Per-command outcome]
+    D -- No --> J[Run unprivileged commands<br/>separately, no prompt]
+    J --> I
+    I --> K[killall Finder ONCE<br/>if the hidden-files row succeeded]
+    K --> L[macOS 15+ Gatekeeper follow-up<br/>only if spctl succeeded]
+    L --> M[Re-read actual state]
+    M --> N{All succeeded?}
+    N -- Yes --> O[Footer banner:<br/>สำเร็จทั้งหมด]
+    N -- No --> P[Per-item ✅/❌ dialog]
+    O --> Q[Clear the queue]
+    P --> Q
+```
+
+Guarantees the batch must uphold:
+
+- **At most one password dialog per Apply**, regardless of how many privileged rows are queued.
+- **One failure never aborts the rest.** Commands are joined with `;` and each is wrapped in its
+  own `if/then/else`; `set -e` is never used.
+- **Silence is failure, never success.** A command that prints no marker is reported as failed,
+  because a batched script's exit status is always `0`.
+- **Markers are exact matches**, never prefix matches, so `RS_OK:install-rosetta-extra` can
+  never satisfy the `install-rosetta` row.
+- **Cancellation is silent and aborts the whole batch.** Dismissing the Authorization dialog
+  reports **every** row as cancelled — privileged *and* unprivileged — and the unprivileged half is
+  then **not run**. Running the LaunchAgent write while Gatekeeper silently did not change would be
+  exactly the half-applied state the queue exists to prevent. The queue is also left intact, so
+  ✅ can simply be pressed again.
+- **The batch takes the same lock as a single feature**, so it can never run beside a menu-bar
+  toggle and raise two dialogs at once.
+- **The macOS 15+ Gatekeeper step runs only on success.** Opening System Settings after a failed
+  or cancelled `spctl` would contradict the message the user is looking at.
+
+---
 ## Cross-cutting behaviour
 
 ### Row order (fixed)
@@ -630,6 +744,43 @@ silently ignored, exactly as it is from the panel.
 | Run at Startup | The LaunchAgent plist exists — the app is a menu-bar gadget (mode B) |
 | Gatekeeper | **Gatekeeper is disabled** (inverted — ON = insecure state) |
 | Hidden Files | **Hidden files are shown** (inverted vs. the system default) |
+### 10.4 Which actions are queued
+
+| Feature | Queued? | Notes |
+|---------|---------|-------|
+| 1. Run at Startup | ✅ | Batched as **inline** work — no shell, no elevation, because the plist lives in the user's own `~/Library` |
+| 2. Gatekeeper | ✅ | macOS 15+ opens System Settings **after** a successful batch |
+| 3. Hidden Files | ✅ | `killall Finder` runs **once per batch**, not once per row |
+| 4. Auto Boot | ✅ | Re-checked at apply time; a locked row is refused rather than written |
+| 5. Rosetta 2 | ✅ | "May take several minutes" is warned at **stage** time, before the password prompt |
+| 6. Spotlight Rebuild | ✅ | — |
+| 7. DNS Flush | ✅ | — |
+| 8. Clear System Cache | ✅ | Confirmation is shown at **stage** time, and is *additional* to the auth prompt |
+
+### 10.5 What deliberately bypasses the queue
+
+Three routes run **immediately** and never touch `pendingChanges`:
+
+| Route | Why |
+|-------|-----|
+| Menu-bar **left-click** → Gatekeeper | A single deliberate action; a queue would mean the user had to press Apply for one toggle. One password prompt, as before. |
+| Menu-bar **right-click** menu items | Shortcuts, not batch configuration. |
+| `rosettastone://` URL actions | Driven by Apple Shortcuts at arbitrary times — often with no panel on screen at all. Staging a change nobody will ever press Apply for would be a silently-dropped action. |
+
+The rationale: the queue exists to make *configuring several things at once* cheap. A shortcut is
+already a single explicit command, so deferring it adds a step and buys nothing.
+
+### 10.6 Feedback for a batch
+
+| Outcome | What the user sees |
+|---------|--------------------|
+| Every row succeeded | Footer banner: **สำเร็จทั้งหมด** · N change(s) applied. No dialog. |
+| Any row failed | Footer banner with the failure count **and** a per-item dialog listing **every** row with a ✅ or ❌, so the successes are visibly confirmed too. |
+| Authorization dismissed | Nothing. The queue is kept and the pending dots remain; the user can press ✅ again. |
+
+Failed rows stay queued, so a retry is a second press of ✅ rather than a re-staging exercise.
+
+---
 | Auto Boot | Auto boot is enabled |
 
 Two of the four toggles are inverted. The UI must label them unambiguously (for example
@@ -638,12 +789,18 @@ Two of the four toggles are inverted. The UI must label them unambiguously (for 
 ### Concurrency
 - Only one privileged operation may be in flight at a time. A second request while one is
   running must be queued or rejected with an explanatory message — never two simultaneous
-  `osascript` auth dialogs.
+  `osascript` auth dialogs. **A batch holds the same lock as a single feature**, so pressing
+  ✅ while a menu-bar toggle is running is rejected rather than interleaved.
 - Quick Tools buttons must disable themselves for the duration of their own execution.
+- The master Apply/Cancel buttons are disabled while anything is in flight, so a batch can never
+  be started from underneath another operation.
 
 ### Feedback
 Every action produces exactly one terminal state: **success**, **cancelled by the user at the
 auth prompt**, or **failed with a message**. No action may fail silently.
+
+A **batch** produces one terminal state *per row* rather than one for the batch: a ✅/❌ per
+item, so one failing command never hides the six that worked. See §10.6.
 
 
 

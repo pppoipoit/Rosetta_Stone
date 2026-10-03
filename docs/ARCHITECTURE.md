@@ -391,6 +391,84 @@ interpolate raw user input, runtime-discovered file names, or URL parameters.
 `defaults read`, or probing `/usr/libexec/oah/libRosettaRuntime` never prompts for a password.
 The app must escalate only on *write*, so merely opening the window costs the user nothing.
 
+### Single-auth batching
+
+Without batching, queueing four privileged changes would run four `osascript` invocations and
+show four Authorization dialogs — the user retypes the same password once per row, and each prompt
+steals focus separately. `SystemCommands.runBatched(_:)` instead concatenates **all** privileged
+commands into one shell script and runs it inside a **single** `do shell script … with
+administrator privileges`.
+
+Because a multi-command exit status is always the status of the *last* command, per-command
+outcomes cannot be read from the exit code. Each command is therefore wrapped so it emits exactly
+one marker line, and stdout is parsed for those markers:
+
+```bash
+if ( /usr/sbin/spctl --master-disable ) >/dev/null 2>&1 ; \
+  then echo 'RS_OK:toggle-gatekeeper' ; \
+  else echo 'RS_FAIL:toggle-gatekeeper' ; fi ; \
+if ( /usr/sbin/nvram AutoBoot=%03 ) >/dev/null 2>&1 ; \
+  then echo 'RS_OK:auto-boot' ; \
+  else echo 'RS_FAIL:auto-boot' ; fi
+```
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor U as User
+    participant V as ContentView
+    participant C as FeatureCoordinator
+    participant S as SystemCommands
+    participant OS as macOS Authorization
+    participant SH as /bin/sh (root)
+
+    U->>V: presses ✅ ตกลง
+    V->>V: build FeatureCommand per pending row<br/>(FeatureID.allCases order)
+    V->>C: applyBatch(commands)
+    C->>C: take single-operation lock<br/>(reject if already busy)
+    C->>S: runBatched(commands)
+
+    S->>S: split by requiresAdmin
+    S->>S: batchScript(for: privileged)<br/>one RS_OK/RS_FAIL marker each
+
+    Note over S,OS: ONE password dialog for the whole batch
+    S->>OS: osascript do shell script … with administrator privileges
+    OS->>U: Authorization dialog
+    alt user cancels
+        U-->>OS: cancel (-128)
+        OS-->>S: .cancelled
+        S-->>C: every privileged row = .cancelled
+    else user authorises
+        OS->>SH: run as root
+        SH-->>S: RS_OK:/RS_FAIL: marker lines
+        S->>S: parseBatchMarkers — exact match only
+    end
+
+    S-->>C: BatchResult (ordered per command)
+
+    C->>C: post-steps once (killall Finder)
+    C->>C: macOS 15+ Gatekeeper step, only if spctl succeeded
+    C->>C: reloadState() — re-read actual truth
+    C-->>V: BatchReport (main thread)
+
+    alt all succeeded
+        V->>U: footer banner สำเร็จทั้งหมด
+    else any failed
+        V->>U: per-item ✅/❌ dialog
+    end
+    V->>V: clear successful rows from the queue
+    Note over V: failures stay queued for a retry
+```
+
+Four rules the batch must never break:
+
+| Rule | Why |
+|------|-----|
+| One dialog per batch | The entire point; re-prompting per row is the problem being solved. |
+| `if/then/else`, joined with `;`, never `set -e` | One failing command must not abort the rest. |
+| Output redirected, markers matched **exactly** | `spctl`/`nvram`/`rm` all print; a stray line would corrupt parsing. Prefix matching would let `RS_OK:install-rosetta-extra` satisfy the `install-rosetta` row. |
+| No marker ⇒ failure | A batched script's exit status is always `0`. Silence is not evidence. |
+
 ### Result classification
 
 ```mermaid
@@ -552,24 +630,96 @@ flowchart TD
 | Path | Responsibility |
 |------|----------------|
 | `RosettaStone/App/` | `main.swift` (both entry points), `RosettaStoneApp`, `AppDelegate` — mode resolution, URL-scheme entry, reopen handling, live mode switching |
-| `RosettaStone/Models/` | `FeatureID` + `FeatureAvailability` (row copy, hardware gating on `MacProfile`, clear-cache warning), `AppMode`, `CommandResult` / `ProcessResult` |
-| `RosettaStone/Services/` | `SystemCommands` (the only place that spawns processes or elevates, plus the Gatekeeper version rule), `FeatureCoordinator` (+ `FeatureCoordinator+Actions`), `StartupManager`, `SystemStateReader`, `CPUArchitecture`, `MacProfile` (model name + form factor, ADR-008), `URLActionRouter`, `GatekeeperPolicy`, `Trace` |
-| `RosettaStone/Views/Main/` | `ContentView` (toggle rows, Rosetta row, Quick Tools grid, footer), `Components`, `Theme` — including `TooltipHost`, the AppKit tooltip used by locked rows |
+| `RosettaStone/Models/` | `FeatureID` + `FeatureAvailability` (row copy, hardware gating on `MacProfile`, clear-cache warning), `AppMode`, `CommandResult` / `ProcessResult`, `DeferredChange` (`PendingChange`, `FeatureCommand`, `BatchItemResult`, `BatchReport`) |
+| `RosettaStone/Services/` | `SystemCommands` (the only place that spawns processes or elevates, plus the Gatekeeper version rule and `runBatched`), `FeatureCoordinator` (+ `FeatureCoordinator+Actions`, + the deferred queue), `StartupManager`, `SystemStateReader`, `CPUArchitecture`, `MacProfile` (model name + form factor, ADR-008), `URLActionRouter`, `GatekeeperPolicy`, `Trace` |
+| `RosettaStone/Views/Main/` | `ContentView` (toggle rows, pending dots, Rosetta row, Quick Tools grid, footer, Apply/Cancel bar, batch report sheet), `Components` (`PillSwitch`, `PendingDot`, `ApplyBar`, `TooltipHost`, `StatusBanner`), `Theme` |
 | `RosettaStone/Views/MenuBar/` | `MenuBarController` (status item, dropdown menu, panel window), `StatusItemToast`, `DiagnosticsPanel` |
-| `RosettaStone/Support/` | `Info.plist`, `RosettaStone.entitlements` |
+| `RosettaStone/Resources/` | `AppIcon.png` — the 1024×1024 master icon, and `Assets.xcassets` (`StatusBarIcon` only) |
+| `RosettaStone/Support/` | `Info.plist`, `RosettaStone.entitlements`, `AppIcon.appiconset` |
+
+### Two layers of state: actual vs pending
+
+`ContentView` renders two different values for every row, and confusing them is the one bug this
+design exists to prevent.
+
+| | Actual state | Pending state |
+|---|--------------|---------------|
+| Owner | `FeatureCoordinator` (`@Published`) | `ContentView` (`@State pendingChanges`) |
+| Contents | `runAtStartup`, `gatekeeperBypassed`, `hiddenFilesShown`, `autoBootEnabled`, `rosettaInstalled` | `[FeatureID: PendingChange]` |
+| Source of truth | The system — re-read after every write | The user's intent in this session |
+| Drawn as | The pill, unless something is pending | The pill (it wins) **and** an orange ● beside the title |
+| Lifecycle | Lives as long as the app | Lost when the panel's view is recreated |
+
+Rules that keep the two from bleeding into each other:
+
+1. **The pill shows the pending value when one exists.** The switch must reflect what the user
+   just asked for.
+2. **The dot exists exactly when the two disagree.** Staging a value equal to the actual state
+   *removes* the entry, so a switch flipped on and back off leaves nothing behind.
+3. **Actual state is always re-read after a write** — including after a batch. This is what clears
+   the dot for rows that took effect and keeps it for rows that did not.
+4. **Only `FeatureCoordinator` may write to actual state**; only four `ContentView` methods mutate
+   `pendingChanges` (`stageToggle`, `stageAction`, the completion handler of `applyPendingChanges`,
+   and `cancelPendingChanges`).
+
+### The one command table
+
+`FeatureCoordinator.command(for:pending:)` is the **single** place that turns a feature plus a
+desired value into a command. Both routes go through it:
+
+| Route | Path |
+|-------|------|
+| Panel (queued) | `pendingChanges` → `command(for:pending:)` → `SystemCommands.runBatched` |
+| Panel (immediate) | `runImmediately(_:pending:)` → same table → `runAsAdmin` / `runShell` |
+| Menu bar, URL scheme | `toggleGatekeeper()`, `flushDNS()`, … → `runImmediately(_:pending:)` |
+
+Because `Tool` (the table of binary paths) is also shared, the queued route and the immediate route
+cannot drift to different commands — which is the failure mode that would leave the panel promising
+something the shortcuts do not actually do.
+
+### App icon pipeline
+
+The icon is a **derived** artefact, not a hand-drawn one. One master is committed, and the ten
+required macOS sizes are generated from it:
+
+```mermaid
+flowchart LR
+    A["RosettaStone/Resources/AppIcon.png<br/>1024×1024 master<br/>(CC BY-SA 3.0, Abshifflett)"] --> B["scripts/generate-icons.sh<br/>ImageMagick convert -resize"]
+    B --> C["RosettaStone/Support/AppIcon.appiconset/<br/>10 PNGs: 16, 32, 64, 128,<br/>256, 512, 1024 px as 1x/2x pairs"]
+    C --> D["project.yml resources:<br/>AppIcon.appiconset"]
+    D --> E["actool at build time<br/>ASSETCATALOG_COMPILER_APPICON_NAME=AppIcon"]
+    E --> F["RosettaStone.app/Contents/Resources/AppIcon.icns"]
+    F --> G["CFBundleIconFile = AppIcon<br/>Finder, Dock, Spotlight"]
+```
+
+Three deliberate properties:
+
+| Property | Reason |
+|----------|--------|
+| The generated PNGs are **committed** | A plain `xcodebuild` then needs no ImageMagick; CI and every contributor build the same icon. The script only runs when the master changes. |
+| `-background none -alpha set` on every resize | Dropping it flattens alpha against black and leaves a dark box around the glyph in every size — a defect that only shows on a light wallpaper. |
+| The icon lives in its **own** catalog, not `Assets.xcassets` | `Assets.xcassets` is already copied wholesale by the sources glob; a second `AppIcon` set inside it would make `actool` report a duplicate definition. It is therefore excluded from the glob and added under `resources:`. |
 
 ### Layering rules
 
 1. **Views never spawn processes.** A view calls a service; it never touches `Process` or
    `NSAppleScript`.
-2. **Only `SystemCommands.runAsAdmin(_:timeout:)` may call `osascript`.** Elevation is
-   centralised so it can be audited, rate-limited, and serialised in one place.
+2. **Only `SystemCommands.runAsAdmin(_:timeout:)` and `runBatched(_:)` may call `osascript`.**
+   Elevation is centralised so it can be audited, rate-limited, and serialised in one place — and
+   so "one Authorization dialog per batch" is a property of a single function.
 3. **Only `SystemCommands` spawns processes** (`run`, `shell`, `runShell`). It is the single
    place where `PATH`, working directory, timeouts, and output truncation are defined.
 4. **Every service exposes read and write separately**, and reads must be unprivileged.
 5. **Services never touch UI state.** Results flow back through `FeatureCoordinator`, and
    anything the UI must present — the macOS 15+ Gatekeeper confirmation — crosses as a closure
    hook (`onGatekeeperNeedsConfirmation`) rather than an AppKit import.
+6. **Pending state is view-local and never read by a service.** `ContentView` owns
+   `pendingChanges`; a service receives an already-built `[FeatureCommand]` and has no idea a
+   queue exists. This is what keeps "what the user wants" from being mistaken for "what the
+   system is".
+7. **One command table.** Every write path builds its command through
+   `FeatureCoordinator.command(for:pending:)`, so a change made through the queue and the same
+   change made through a shortcut execute identical bytes.
 
 ---
 

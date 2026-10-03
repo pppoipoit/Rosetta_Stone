@@ -40,6 +40,13 @@ final class FeatureCoordinator: ObservableObject {
     /// True while any feature row is busy — used to show the in-flight state.
     @Published private(set) var busyFeature: FeatureID?
 
+    /// True while a **deferred batch** is being committed (ADR-009).
+    ///
+    /// Separate from `busyFeature` on purpose: a batch spans several rows, so there is no
+    /// single row to spin, and naming one of them would be a lie. The panel uses this to grey
+    /// out the master buttons and the whole grid while a single Authorization dialog is up.
+    @Published private(set) var isApplyingBatch = false
+
     /// The last completed action's feedback, shown in the panel footer.
     @Published private(set) var statusMessage: StatusMessage?
 
@@ -92,13 +99,30 @@ final class FeatureCoordinator: ObservableObject {
     /// (layering rule 1, `docs/ARCHITECTURE.md` §6).
     var onGatekeeperNeedsConfirmation: (() -> Void)?
 
+    /// What currently holds the single-operation lock, touched **only** on `queue`.
+    ///
+    /// A batch occupies the same lock as a single feature, because the invariant is
+    /// "one privileged thing at a time", not "one row at a time". Without the `.batch` case a
+    /// batch and a menu-bar toggle could each believe they had the machine to themselves and
+    /// raise two Authorization dialogs at once.
+    private enum ActiveOperation {
+        case feature(FeatureID)
+        case batch
+
+        /// The row to name in the "still running" message, or `nil` for a batch.
+        var title: String? {
+            if case .feature(let feature) = self { return feature.title }
+            return nil
+        }
+    }
+
     /// The authoritative in-flight marker, touched **only** on `queue`.
     ///
     /// The single-operation lock must be decided on the serial queue. Deciding it from
     /// the `@Published busyFeature` would be racy: that value is written on the main
     /// thread, so a URL action dispatched straight onto `queue` could read a stale
     /// `nil` and start a second `osascript` prompt alongside the first.
-    private var activeFeature: FeatureID?
+    private var activeFeature: ActiveOperation?
 
     // MARK: - Init
 
@@ -114,8 +138,11 @@ final class FeatureCoordinator: ObservableObject {
         feature.availability(on: profile)
     }
 
-    /// True while any operation is in flight.
-    var isBusy: Bool { busyFeature != nil }
+    /// True while any operation is in flight — a single feature **or** a batch.
+    ///
+    /// The menu bar disables its mutating items from exactly this, so a queued batch also
+    /// blocks the shortcuts: a URL action must not slip in beside a live Authorization dialog.
+    var isBusy: Bool { busyFeature != nil || isApplyingBatch }
 
     // MARK: - Initial state load
 
@@ -148,6 +175,177 @@ final class FeatureCoordinator: ObservableObject {
         }
     }
 
+    // MARK: - The deferred queue (ADR-009)
+
+    /// Translates one staged change into the command that will commit it.
+    ///
+    /// Lives beside the other write paths so the *immediate* routes (menu bar, URL scheme) and
+    /// the *queued* route cannot drift: both ultimately call the same `SystemCommands`
+    /// primitives with the same strings. Returns `nil` for a change that has no command —
+    /// a locked row, or a one-shot action that is already satisfied.
+    ///
+    /// - Parameter pending: the staged intent for `feature`.
+    func command(for feature: FeatureID, pending: PendingChange) -> FeatureCommand? {
+        switch (feature, pending) {
+
+        case (.runAtStartup, .toggle(let enabled)):
+            // No elevation, and no shell either: the plist lives in the user's own home
+            // directory, so this is a `FileManager` call (ADR-006). Running it inside the
+            // batch as *inline* work is what keeps the "no password for your own ~/Library"
+            // guarantee intact while still batching it with everything else.
+            return FeatureCommand(
+                feature: feature,
+                work: .inline { [weak self] in
+                    guard let self = self else {
+                        return .failure(message: "App is shutting down.", exitCode: -1)
+                    }
+                    return enabled ? self.startupManager.install() : self.startupManager.remove()
+                },
+                requiresAdmin: false)
+
+        case (.gatekeeper, .toggle(let bypassed)):
+            return FeatureCommand(
+                feature: feature,
+                work: .shell("\(Tool.spctl) --master-\(bypassed ? "disable" : "enable")"),
+                requiresAdmin: true)
+
+        case (.hiddenFiles, .toggle(let shown)):
+            // `killall Finder` is deliberately **not** part of the command: it runs once for
+            // the whole batch (see `batchPostStep`), so a queue that also touches three other
+            // rows does not blink the desktop three times.
+            return FeatureCommand(
+                feature: feature,
+                work: .shell("\(Tool.defaults) write com.apple.finder AppleShowAllFiles \(shown ? "YES" : "NO")"),
+                requiresAdmin: false,
+                batchPostStep: "\(Tool.killall) Finder")
+
+        case (.autoBoot, .toggle(let enabled)):
+            // Same two guards as `setAutoBoot(enabled:)`. A staged change on a locked row can
+            // only happen if the Mac changed identity between staging and applying, so it is
+            // refused rather than written.
+            guard profile.cpuArchitecture == .x86_64,
+                  availability(for: .autoBoot).isEnabled else { return nil }
+            return FeatureCommand(
+                feature: feature,
+                work: .shell("\(Tool.nvram) AutoBoot=\(enabled ? "%03" : "%00")"),
+                requiresAdmin: true)
+
+        case (.rosetta2, .action):
+            guard availability(for: .rosetta2).isEnabled else { return nil }
+            // Pre-check, exactly as `installRosetta()` does: never raise a password dialog to
+            // install something that is already on disk.
+            guard SystemStateReader.isRosettaInstalled() == false else { return nil }
+            return FeatureCommand(
+                feature: feature,
+                work: .shell("\(Tool.softwareupdate) --install-rosetta --agree-to-license"),
+                requiresAdmin: true,
+                timeout: SystemCommands.longTimeout)
+
+        case (.spotlightRebuild, .action):
+            return FeatureCommand(
+                feature: feature,
+                work: .shell("\(Tool.mdutil) -E /"),
+                requiresAdmin: true)
+
+        case (.dnsFlush, .action):
+            return FeatureCommand(
+                feature: feature,
+                work: .shell("""
+                \(Tool.dscacheutil) -flushcache && \
+                (\(Tool.killall) -HUP mDNSResponder 2>/dev/null || true)
+                """),
+                requiresAdmin: true)
+
+        case (.clearSystemCache, .action):
+            return FeatureCommand(
+                feature: feature,
+                work: .shell("\(Tool.rm) -rf /Library/Caches/*"),
+                requiresAdmin: true)
+
+        default:
+            return nil
+        }
+    }
+
+    /// Commits a whole queue under the same single-operation lock every other write uses.
+    ///
+    /// Guarantees, all inherited from `perform`:
+    /// 1. a batch requested while another operation is running is **rejected**, never
+    ///    interleaved — two Authorization dialogs must never fight for focus,
+    /// 2. the panel shows one busy state,
+    /// 3. exactly one terminal outcome per row,
+    /// 4. authoritative state is re-read afterwards, so a pending dot clears only for rows
+    ///    that actually took effect.
+    ///
+    /// - Parameter completion: receives the per-item results so the view can raise its
+    ///   results dialog. Called on the **main thread**.
+    func applyBatch(_ commands: [FeatureCommand],
+                    completion: @escaping (BatchReport) -> Void) {
+        guard commands.isEmpty == false else { return }
+
+        queue.async { [weak self] in
+            guard let self = self else { return }
+
+            if let running = self.activeFeature {
+                self.publish { $0.statusMessage = StatusMessage(
+                    text: running.title.map { "“\($0)” is still running — please wait for it to finish." }
+                        ?? "Changes are still being applied — please wait.",
+                    style: .info) }
+                return
+            }
+
+            self.activeFeature = .batch
+            self.publish { $0.isApplyingBatch = true }
+
+            let result = SystemCommands.runBatched(commands)
+            let report = BatchReport(items: result.items)
+
+            // Post-steps run once for the whole batch, and only for rows that actually
+            // succeeded. `killall Finder` after a failed hidden-files write would restart
+            // Finder for nothing and blink at a setting that never changed.
+            let succeeded = Set(result.items.filter { $0.succeeded }.map { $0.feature })
+            var ranPostSteps: Set<String> = []
+            for command in commands where succeeded.contains(command.feature) {
+                guard let step = command.batchPostStep, ranPostSteps.insert(step).inserted else { continue }
+                _ = SystemCommands.runShell(step)
+            }
+
+            // The macOS 15+ Gatekeeper follow-up still runs, but **only** if the batch actually
+            // disabled Gatekeeper successfully. Opening System Settings after a failed or
+            // cancelled `spctl` would contradict the message the user is looking at.
+            if case .success? = report.outcome(for: .gatekeeper),
+               SystemStateReader.isGatekeeperBypassed() == true,
+               SystemCommands.gatekeeperDisableRequiresSystemSettingsConfirmation() {
+                self.publish { $0.onGatekeeperNeedsConfirmation?() }
+            }
+
+            // Release the lock *before* the main-thread publishes are delivered, for the same
+            // reason `perform` does: the queue must not be held up by UI work.
+            self.activeFeature = nil
+            self.publish { coordinator in
+                coordinator.isApplyingBatch = false
+                if report.wasCancelled {
+                    // Silent revert: the user dismissed the dialog, which is itself the answer.
+                    coordinator.statusMessage = nil
+                } else if report.allSucceeded {
+                    coordinator.statusMessage = StatusMessage(
+                        text: "สำเร็จทั้งหมด · \(report.items.count) change(s) applied.",
+                        style: .success)
+                } else {
+                    coordinator.statusMessage = StatusMessage(
+                        text: "\(report.failures.count) of \(report.items.count) change(s) could not be applied.",
+                        style: .failure)
+                }
+            }
+
+            // Re-read after every terminal state, so rows that took effect lose their
+            // pending dot and the ones that did not keep it.
+            self.reloadState()
+
+            DispatchQueue.main.async { completion(report) }
+        }
+    }
+
     // MARK: - Operation plumbing (used by FeatureCoordinator+Actions.swift)
 
     /// Runs `work` on the serial queue under the single-operation lock.
@@ -177,12 +375,13 @@ final class FeatureCoordinator: ObservableObject {
 
             if let running = self.activeFeature {
                 self.publish { $0.statusMessage = StatusMessage(
-                    text: "“\(running.title)” is still running — please wait for it to finish.",
+                    text: running.title.map { "“\($0)” is still running — please wait for it to finish." }
+                        ?? "Changes are still being applied — please wait.",
                     style: .info) }
                 return
             }
 
-            self.activeFeature = feature
+            self.activeFeature = .feature(feature)
             self.publish { $0.busyFeature = feature }
 
             let outcome = work()

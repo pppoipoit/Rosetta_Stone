@@ -558,7 +558,204 @@ model, form factor, gate result and reason.
 
 ---
 
-## Revisit triggers
+## ADR-009: A deferred queue for batch configuration
+
+### Context
+
+Each panel row ran its command the instant the switch moved. That was correct when the panel was a
+set of independent one-off toggles, but configuring a Mac is rarely one thing:
+
+1. **The password cost was multiplied.** Seven of eight features need root, so switching on
+   Gatekeeper, Hidden Files and Auto Boot in one sitting produced **three** Authorization dialogs.
+   The user typed the same password three times, and each prompt stole focus from the panel.
+2. **A half-applied configuration was easy to leave behind.** If the third command failed, the
+   first two had already taken effect — and the panel had no way to show or undo that partial state.
+3. **Destructive warnings landed at the wrong moment.** The Clear System Cache warning fired
+   immediately before the command, so a user queueing several maintenance actions saw the warning
+   scroll past in a hurry rather than as a considered step.
+4. **A synchronous password prompt interrupted browsing.** Toggling a row to *look* at the effect
+   on macOS 15+ meant answering a dialog mid-thought.
+
+The tension: the app must still support one deliberate action at a time. The menu-bar left-click
+and Apple Shortcuts both perform a single feature, and neither should grow a second step.
+
+### Decision
+
+Separate **pending state** from **actual state**, and commit the pending set in one batch.
+
+- **Actual state** stays where it was — `FeatureCoordinator`'s `@Published` properties, re-read
+  from the system after every write, never trusted from a command's exit code.
+- **Pending state** is new: `ContentView`'s `@State pendingChanges: [FeatureID: PendingChange]`.
+  It is view-local, in-memory, and never read by a service.
+- **The switch renders the pending value**, so the user sees what they asked for; an **orange ●**
+  beside the title marks that it is not yet true of the system.
+- **Two master buttons** — **❌ ยกเลิก** (discard, runs nothing) and **✅ ตกลง** (commit, ⌘↩) —
+  are disabled while the queue is empty.
+- **Committing builds one `FeatureCommand` per pending row** and hands them to
+  `SystemCommands.runBatched`, which concatenates every privileged command into a single
+  `do shell script … with administrator privileges`.
+- **Per-command results come from stdout markers** (`RS_OK:<feature>` / `RS_FAIL:<feature>`),
+  not from the exit code, which for a multi-command script is always `0`.
+- **Three routes deliberately bypass the queue** and run immediately: menu-bar left-click, the
+  right-click menu, and `rosettastone://` URL actions.
+
+### Rationale
+
+**Why deferral.** Batch configuration is the common case, not the exception. Making it one prompt
+and one atomic-feeling step is worth one extra click on the single-action path.
+
+**Why the switch shows the pending value.** Showing the actual value would make the panel appear to
+ignore the user's click, which reads as a bug. The switch shows intent; the ● is what distinguishes
+intent from fact.
+
+**Why the ● is defined as `pending ≠ actual` rather than merely "an entry exists".** A dot that
+survives a toggle-and-toggle-back would describe a change that does not exist. Staging a value
+equal to the actual state therefore *removes* the entry.
+
+**Why markers instead of the exit code.** A batched script's status is the status of its last
+command, so two failures and seven successes would both report `0`. Each command is wrapped in
+`if/then/else` that prints exactly one marker, and output is redirected so `spctl`'s chatter cannot
+corrupt the parse. Markers are matched **exactly**: prefix matching would let
+`RS_OK:install-rosetta-extra` satisfy the `install-rosetta` row.
+
+**Why no marker means failure.** Silence is not evidence. A command that prints nothing is
+reported as failed, which is the same "never trust the exit code" rule the single-command paths
+already follow, applied to an exit code that is always `0`.
+
+**Why a batch shares the single-operation lock.** The invariant is *one privileged thing at a
+time*, not *one row at a time*. `activeFeature` became `ActiveOperation.feature(_)` / `.batch` so a
+batch and a menu-bar toggle can never each believe they own the machine and raise two dialogs.
+
+**Why cancellation is silent and keeps the queue.** Dismissing the Authorization dialog is the user
+answering "not now", not reporting a failure. Erroring on it would be noise; dropping the queue
+would throw away work the user may want to retry. So: no message, no state change, ✅ still works.
+
+**Why the three bypass routes stay immediate.** A menu-bar left-click and a Shortcut invocation are
+already single, explicit commands. Deferring them adds a step for no benefit, and a queued URL
+action is worse than useless — it is a silently dropped action, because the Shortcut has no way to
+press Apply.
+
+**Why `PendingChange` is an enum rather than `[FeatureID: Any]`.** `Any` forces every read back
+through a cast, and a mis-cast silently degrades to "no pending change" — the user stages a
+change, presses Apply, and nothing happens. Three cases (`toggle(Bool)`, `action`) carry no
+ambiguity and are exhaustively checkable in one switch.
+
+### Consequences
+
+| Consequence | |
+|---|---|
+| One password dialog per batch, not per row | The whole point |
+| A batch can partially succeed, and says so per row | ✅/❌ per item; one failure never hides the successes |
+| Failed rows stay queued | Retry is a second ✅, not a re-staging exercise |
+| Cancellation is silent and non-destructive | Matches the pre-existing rule for `.cancelled` |
+| The panel is 60 pt taller | `ContentView.panelHeight` 540 → 600; absorbed by `Spacer`, so no row was shrunk |
+| Pending changes are lost if the view is recreated | Accepted: the window is retained, and a half-configured Mac is not worth persisting across launches |
+| Confirmations moved to stage time | Strictly better — the warning is read *before* the password prompt, not between it and the command |
+
+### Alternatives considered
+
+| Alternative | Why rejected |
+|-------------|--------------|
+| Keep immediate execution, just ask for the password once per session | Caching an admin credential is exactly the security anti-pattern this app avoids — the app must never handle a password. |
+| Apply on window close | Surprising, and closing a window is not consent. |
+| A second "apply all" button while keeping per-row immediate | Two competing mental models for the same action, and the immediate path would still raise N dialogs for anyone who used it. |
+| `[FeatureID: Any]` as the queue's value type | Every read needs a cast, and a bad cast fails silently. |
+| Read per-command results from the batch exit code | Always `0` for a multi-command script; it cannot distinguish 7/7 from 2/7. |
+| `cmd && echo OK \|\| echo FAIL` | In an `&&` chain, a command whose last statement fails can emit **both** markers, making one row look half-applied. |
+| `set -e` in the batch script | Aborts the entire batch on the first failure — the opposite of per-row reporting. |
+
+### Revisit when
+
+- The pending queue needs to outlive the window (persisting intent across launches).
+- A row becomes available for a *third* kind of pending value — the enum grows to four or more cases.
+- macOS offers a first-class batch-authorization API that reports per-command status natively.
+
+---
+
+## ADR-010: A CC BY-SA 3.0 icon with visible attribution
+
+### Context
+
+The app shipped with no app icon. Its status-bar glyph is drawn in code
+(`MenuBarController.makeGlyphImage`), so the app was fully usable — but the Dock tile, the
+**Applications** folder and Spotlight all showed the generic blank document icon, which reads as
+"broken download" to exactly the audience most likely to be suspicious of an unsigned app
+(ADR-003).
+
+Producing a good icon has costs:
+
+- **Commissioning one** is slow and produces a licence nobody else can reuse.
+- **Drawing ten sizes by hand** guarantees drift: the 16 px and the 512 px stop matching, and there
+  is no test that can catch it.
+- **Licensing someone else's work** is the fastest route to a good icon, but only under terms that
+  obligate us to keep attributing it.
+
+### Decision
+
+Use the **Rosetta Stone icon** by
+[Abshifflett](https://commons.wikimedia.org/wiki/User:Abshifflett), licensed
+[CC BY-SA 3.0](https://creativecommons.org/licenses/by-sa/3.0), and:
+
+1. **Attribute it prominently** in `README.md` §Credits and `Info.plist`, naming the author, the
+   licence, and linking the source.
+2. **Derive every size from one 1024×1024 master** (`RosettaStone/Resources/AppIcon.png`) with
+   `scripts/generate-icons.sh`. Ten hand-drawn sizes would drift; one master plus a script cannot.
+3. **Commit the generated PNGs**, so a plain `xcodebuild` needs no ImageMagick — CI and every
+   contributor get byte-identical icons, and the script only runs when the master changes.
+
+### Rationale
+
+**Why CC BY-SA rather than CC0/public domain.** CC0 would remove the attribution obligation
+entirely, which is the ideal outcome for a licence choice. The best available image of this icon is
+CC BY-SA 3.0, and **misattributing or stripping it is not an option** — so the obligation is
+accepted and made visible rather than worked around.
+
+**Why attribution in two places.** `README.md` is where a person looks for credits. `Info.plist`'s
+`NSHumanReadableCopyright` is what Finder and System Settings show for the installed app, so the
+attribution survives the file leaving the repository. One place alone would be lost in one of those
+two journeys.
+
+**Why a script, not hand-drawn sizes.** The failure mode of a hand-drawn icon set is
+*inconsistency that nobody notices* — a subtly different curve at 32 px. Generating all ten from one
+master makes that impossible by construction, and makes the icon reproducible.
+
+**Why committing the generated PNGs.** The alternative — generating during the build — would put an
+ImageMagick dependency into the CI pipeline and make the icon depend on the runner's ImageMagick
+version. Committing them keeps `xcodebuild` hermetic; the script is a maintenance tool, not a
+build step.
+
+**Why a dedicated catalog rather than `Assets.xcassets`.** `Assets.xcassets` is already copied
+wholesale by the `RosettaStone` sources glob and holds the status-bar glyph. A second `AppIcon`
+set inside it would make `actool` report a duplicate definition. Putting it in
+`RosettaStone/Support/AppIcon.appiconset`, excluded from the glob and added under `resources:`, keeps
+one definition in one place.
+
+### Consequences
+
+| Consequence | |
+|---|---|
+| Redistribution must preserve the attribution | CC BY-SA share-alike; documented in README §Credits and ADR-010 |
+| The master must be committed | `RosettaStone/Resources/AppIcon.png`, 1024×1024, is the source of truth |
+| Changing the icon means re-running a script | `bash scripts/generate-icons.sh` (needs ImageMagick) and committing the 10 outputs |
+| The build has no ImageMagick dependency | Only the master-to-sizes step needs it, and that runs manually |
+| Builds before the PNGs are generated ship a generic icon | `actool` tolerates the empty set; the app still builds and runs |
+
+### Alternatives considered
+
+| Alternative | Why rejected |
+|-------------|--------------|
+| Keep the code-drawn glyph as the app icon | It is a template image sized for an 18 pt menu bar; it is illegible at 16 px and unsuitable as an app icon. |
+| Generate the icon at build time | Adds an ImageMagick dependency to CI and makes the output depend on the runner's version. |
+| Commission an original icon | Costs time and money for an outcome strictly worse in quality than the available CC BY-SA artwork. |
+| Find a CC0 image instead | Preferred on licence grounds, but the best candidate of this icon is CC BY-SA 3.0. Using it correctly is better than not shipping an icon at all. |
+| Draw the ten sizes by hand | Guaranteed to drift, and no test could catch the drift. |
+
+### Revisit when
+
+- A Designer ID certificate is obtained, which would make a privileged helper and a notarised
+  original icon both affordable (ADR-003).
+- The licence of the chosen image changes (e.g. the author relicenses under CC0 or approves a
+  different attribution), which would remove the share-alike obligation.
 
 | ADR | Revisit if |
 |-----|-----------|
