@@ -49,6 +49,12 @@ Check which chip you have:  → **Apple menu → About This Mac**.
 5. Close the DMG window, then **eject** the disk from the sidebar.
 6. Open **Applications → Rosetta Stone**.
 
+> **The app is called the same thing on every Mac.** Only the **`.dmg` file name** differs between
+> Intel and Apple Silicon. The bundle inside is always **`RosettaStone.app`**, so it always installs
+> to **`/Applications/RosettaStone.app`** — never `RosettaStone-Intel.app` or
+> `RosettaStone-AppleSilicon.app`. If you still have one of those older names in **Applications**,
+> delete it: it is a previous build, and two copies can conflict.
+
 Rosetta Stone opens as a **normal windowed app** with a Dock icon; there is no menu-bar icon in
 this default mode. The **Diagnostics…** link in the panel footer is always available. To switch
 to the menu-bar mode, turn **Run at Startup** ON (§6.1).
@@ -101,8 +107,12 @@ What the script does, and what it does not:
 | Does | Does not |
 |------|----------|
 | Removes `com.apple.quarantine` recursively from the app bundle | Disable Gatekeeper |
-| Work on either `RosettaStone.app` or `Rosetta Stone.app` | Bypass any other macOS security check |
+| Work on `/Applications/RosettaStone.app`, the one canonical name | Bypass any other macOS security check |
+| Warn you if an older `RosettaStone-Intel.app` / `RosettaStone-AppleSilicon.app` is still installed | **Delete those old copies for you** |
 | Tell you clearly if the app was not found | Modify the app itself |
+
+The script prints a reminder about older `RosettaStone-Intel.app` / `RosettaStone-AppleSilicon.app`
+bundles, but removing an app is your decision — drag them to the Trash yourself if they are there.
 
 The equivalent one-liner, if you would rather not run the script:
 

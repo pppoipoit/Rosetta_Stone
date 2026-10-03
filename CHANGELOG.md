@@ -12,6 +12,65 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 The first working build. Application code, the XcodeGen project specification and the CI
 pipeline now exist and both matrix legs build green on GitHub Actions.
 
+### Phase 8 — one bundle name; the arch suffix only on DMGs and artifacts
+
+**Installing Rosetta Stone put a chip name in the user's Applications folder.** CI staged each matrix
+leg as `dist/<output_name>.app`, so dragging the app out of the DMG produced
+`/Applications/RosettaStone-Intel.app` on one Mac and `/Applications/RosettaStone-AppleSilicon.app`
+on another. The app is the same app; only the download should differ by architecture. From now on the
+bundle is **always `RosettaStone.app`** and the suffix lives **only** in the `.dmg` filename and the
+artifact name.
+
+This is a naming-only phase. The Intel crash (exit 132 / SIGILL at `AppDelegate.init()`) was already
+fixed by `override init()` plus the CI smoke test; nothing in this phase touches that.
+
+#### Changed
+
+- **The bundle is never renamed.** Each step that touches it defines `BUNDLE="dist/RosettaStone.app"`
+  once and uses that — the `cp -R` in *Collect app bundle*, `codesign` in *Ad-hoc codesign*, the
+  smoke-test binary path, and the `create-dmg` source. `matrix.output_name` is no longer a
+  consumer of anything except the DMG output path and the artifact name, which is what it was
+  always for.
+- **`create-dmg` no longer needs `cd dist`.** The source is the architecture-neutral
+  `dist/RosettaStone.app` and the output is `dist/${{ matrix.output_name }}.dmg`, so both paths are
+  stated in full and the working-directory dance is gone. `--icon` and `--hide-extension` now
+  reference `"RosettaStone.app"`.
+- **`scripts/first-run.sh` targets one canonical path**, `/Applications/RosettaStone.app`, rather
+  than treating names as interchangeable. It now also checks for legacy
+  `RosettaStone-Intel.app` / `RosettaStone-AppleSilicon.app` in `/Applications` and prints a Thai
+  hint asking the user to delete them.
+- Docs: README install section, `docs/USER-GUIDE.md` (§3 install, §4.3 first-run), `docs/CI-CD.md`
+  (step list, step 5/7/9/10 write-ups, naming table, local reproduction) and the ADR-004
+  `create-dmg` command block.
+
+#### Added
+
+- **A DMG content assertion in the *Verify DMG* step.** The old check only proved the image existed
+  and was non-empty. It now mounts the DMG with `hdiutil attach -nobrowse -readonly`, asserts
+  there is **exactly one** `.app` at the volume root and that it is named `RosettaStone.app`, prints
+  the volume listing as evidence, and detaches. Any other state fails the job with `::error::`.
+  This is what makes the naming rule enforceable rather than aspirational: a future change that
+  reintroduces a rename now breaks the build instead of shipping the wrong app name to users.
+- `find … -maxdepth 1` keeps the assertion from counting nested bundles such as
+  `Contents/…/Helper.app`, and an `EXIT` trap guarantees `hdiutil detach` runs even when the
+  assertion fails, so no image is left mounted on the runner.
+
+#### Not changed, deliberately
+
+- **No new runtime code.** An audit of every runtime path that could name the bundle —
+  `StartupManager.currentExecutablePath` (`Bundle.main.bundlePath` + `executableURL`),
+  `DiagnosticsPanel` (*Bundle path* field), `URLActionRouter`, `GatekeeperPolicy` — found **zero**
+  hardcoded bundle names. Everything already derives from `Bundle.main`, so a single-name rule
+  needs no app change and cannot desynchronise from CI.
+- **`matrix.output_name` keeps its values**, and the DMG filenames and artifact names are
+  unchanged: `RosettaStone-AppleSilicon.dmg` / `RosettaStone-Intel.dmg`, uploaded as
+  `…-dmg`. The Releases page still tells the two downloads apart, which is the whole point of the
+  suffix.
+- **Triggers and the `release` job are untouched**, and no `v*` tag was pushed.
+- **Deployment target stays 10.15**; no Swift build settings changed.
+- **`first-run.sh` still does not delete anything.** Removing an app from `/Applications` is a user
+  decision; the script prints the hint and the exact command.
+
 ### Phase 7.2 — MacProfile wiring, committed tests, CI gate
 
 **Auto Boot was gated on `uname -m` alone, which let every Intel desktop through.** An iMac, Mac

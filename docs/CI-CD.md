@@ -24,9 +24,9 @@ flowchart TD
     A{"Trigger"} --> T["test job (ubuntu-latest)<br/>swiftc + MacProfile harness<br/>39 assertions"]
     T -- fail --> X["Stop — no build, no release"]
     T -- pass --> B["build job (macos-latest matrix)"]
-    B --> C1["leg 1: arch=arm64<br/>RosettaStone-AppleSilicon.dmg"]
-    B --> C2["leg 2: arch=x86_64<br/>RosettaStone-Intel.dmg"]
-    C1 --> D["actions/upload-artifact@v4"]
+    B --> C1["leg 1: arch=arm64<br/>RosettaStone-AppleSilicon.dmg<br/>smoke test runs"]
+    B --> C2["leg 2: arch=x86_64<br/>RosettaStone-Intel.dmg<br/>smoke test skipped"]
+    C1 --> D["upload-artifact@v4"]
     C2 --> D
     D --> E{"ref starts with refs/tags/v ?"}
     E -- no --> F["End — artifacts kept for the run"]
@@ -42,7 +42,8 @@ flowchart TD
 | Runner (release) | `ubuntu-latest` |
 | Matrix legs | 2 (`arch=arm64`, `arch=x86_64`) |
 | Tests | 39 assertions (`tests/MacProfileTests.swift`), run before the build |
-| Output | Two `.dmg` artifacts, one per architecture |
+| App bundle name | `RosettaStone.app` on **both** legs — never arch-suffixed |
+| Output | Two `.dmg` artifacts, one per architecture (`RosettaStone-AppleSilicon.dmg`, `RosettaStone-Intel.dmg`) |
 | Signing | Ad-hoc (`codesign --force --deep --sign -`) — no certificate required |
 | Notarization | **None** — see [ADR-003](DECISIONS.md#adr-003) |
 | Project source of truth | `project.yml` (`.xcodeproj` is generated, never committed) |
@@ -120,7 +121,11 @@ matrix:
 | Matrix key | Purpose | Consumer |
 |------------|---------|----------|
 | `arch` | Value passed to `xcodebuild ARCHS=` | The build step |
-| `output_name` | Names the `.app` in `dist/`, the `.dmg`, and the artifact | `cp -R`, `codesign`, `create-dmg`, `upload-artifact` |
+| `output_name` | Names the `.dmg` **file** and the **artifact** only | `create-dmg` (output argument), `upload-artifact` |
+
+> **`output_name` does not name the app bundle.** Since Phase 8 the staged bundle is always
+> `dist/RosettaStone.app`, so the installed app is always `/Applications/RosettaStone.app`. The
+> suffix exists purely to tell two downloads apart in the Releases list. See §6.
 
 Both legs run on `macos-latest`, an Apple Silicon machine. The `x86_64` leg therefore
 **cross-compiles**: `xcodebuild` with `ARCHS=x86_64` emits Intel code on an arm64 host. This works
@@ -136,12 +141,13 @@ because Xcode ships both slices of the SDK; no Intel machine is required in CI.
 | 2 | Install XcodeGen | `run` | `brew install xcodegen`. Replaces the reference workflow's `setup-dotnet`: both exist only to make a build toolchain available. |
 | 3 | Generate Xcode project | `run` | `xcodegen generate --spec project.yml`, then `xcodebuild -list`. Replaces `dotnet restore`. |
 | 4 | Build Swift app | `run` | The `xcodebuild` invocation. Replaces `dotnet publish`. |
-| 5 | Collect app bundle | `run` | `cp -R` the built `.app` out of DerivedData into `dist/<output_name>.app`. Replaces the reference workflow's hand-written `mkdir` + `cat Info.plist` + `PkgInfo` heredoc. |
+| 5 | Collect app bundle | `run` | `cp -R` the built `.app` out of DerivedData into `dist/RosettaStone.app` — **no rename**. Replaces the reference workflow's hand-written `mkdir` + `cat Info.plist` + `PkgInfo` heredoc. |
 | 6 | Ad-hoc codesign | `run` | `codesign --force --deep --sign -`, then verify. |
-| 7 | Install create-dmg | `run` | `brew install create-dmg`. |
-| 8 | Create DMG | `run` | Builds the drag-to-Applications disk image. |
-| 9 | Verify DMG | `run` | Fails with an `::error::` annotation if the DMG is missing or empty, then records its size. |
-| 10 | Upload DMG artifact | `actions/upload-artifact@v4` | Publishes the DMG as a run artifact. |
+| 7 | Smoke test | `run` | Launches the signed binary twice (windowed + `--menu-bar-only`) and requires it to survive 5 s. Skipped when the runner arch ≠ the leg's arch. |
+| 8 | Install create-dmg | `run` | `brew install create-dmg`. |
+| 9 | Create DMG | `run` | Builds the drag-to-Applications disk image. Output keeps the arch suffix; the staged app does not. |
+| 10 | Verify DMG | `run` | Fails with an `::error::` annotation if the DMG is missing or empty, then **mounts it and asserts it contains exactly one `.app` named `RosettaStone.app`**. |
+| 11 | Upload DMG artifact | `actions/upload-artifact@v4` | Publishes the DMG as a run artifact. |
 
 ### Step 3 — Generate Xcode project
 
@@ -197,10 +203,10 @@ off.
 ### Step 5 — Collect app bundle
 
 ```bash
+BUNDLE="dist/RosettaStone.app"
 mkdir -p dist
-cp -R build/Build/Products/Release/RosettaStone.app \
-      "dist/${{ matrix.output_name }}.app"
-ls -l "dist/${{ matrix.output_name }}.app/Contents"
+cp -R build/Build/Products/Release/RosettaStone.app "$BUNDLE"
+ls -l "$BUNDLE/Contents"
 ```
 
 The reference workflow assembled its `.app` by hand — `mkdir` the bundle skeleton, `cat` an
@@ -214,15 +220,21 @@ The `Info.plist` inside the bundle is **not** written by the pipeline. It is
 reviewed in the same diff as the rest of the source. `LSMinimumSystemVersion` stays `10.15`, and the
 `GENERATE_INFOPLIST_FILE: NO` setting stops Xcode from synthesising a second, competing one.
 
-Renaming the bundle per leg (`RosettaStone-AppleSilicon.app`, `RosettaStone-Intel.app`) is what lets
-`create-dmg` name each DMG after its own app, and what makes the two uploaded artifacts
-distinguishable at a glance.
+### One bundle name, no per-leg rename
+
+The bundle is **not** renamed per leg. `dist/RosettaStone.app` is the same path on both matrix legs,
+because the `.app` name is what the user ends up seeing in `/Applications` after the drag, and a
+name that changes with the chip — `RosettaStone-Intel.app` here, `RosettaStone-AppleSilicon.app`
+there — leaks an implementation detail into the UI and makes support harder ("which one do I
+delete?"). The architecture suffix is a **distribution** concern, so it stays on the `.dmg` and the
+artifact name, and nowhere else.
 
 ### Step 6 — Ad-hoc codesign
 
 ```bash
-codesign --force --deep --sign - "dist/${{ matrix.output_name }}.app"
-codesign --verify --verbose=2 "dist/${{ matrix.output_name }}.app"
+BUNDLE="dist/RosettaStone.app"
+codesign --force --deep --sign - "$BUNDLE"
+codesign --verify --verbose=2 "$BUNDLE"
 ```
 
 | Flag | Reason |
@@ -241,21 +253,53 @@ The hardened runtime stays off (ADR-003): library validation breaks the `osascri
 on the macOS 10.15 floor, and the app is not sandboxed precisely because it must be able to spawn
 `spctl`, `nvram`, `mdutil`, `softwareupdate` and `osascript`.
 
-### Step 8 — Create DMG
+### Step 7 — Smoke test (launch and stay alive)
 
 ```bash
-cd dist
+BUNDLE="dist/RosettaStone.app"
+BIN="$BUNDLE/Contents/MacOS/RosettaStone"
+
+RUNNER_ARCH="$(uname -m)"
+if [ "$RUNNER_ARCH" != "${{ matrix.arch }}" ]; then
+  echo "::notice::skipping smoke test — leg builds ${{ matrix.arch }} but runner is ${RUNNER_ARCH}"
+  exit 0
+fi
+
+for args in "" "--menu-bar-only"; do
+  "$BIN" $args > smoke.log 2>&1 &
+  PID=$!
+  sleep 5
+  # alive after 5s == pass; otherwise fail and dump smoke.log
+done
+```
+
+| Element | Reason |
+|---------|--------|
+| Two launches, `""` and `--menu-bar-only` | The two modes enter `AppDelegate.init()` by different paths, and each is a separate way to die at launch. |
+| `sleep 5`, then `kill -0 "$PID"` | Cheapest possible liveness check. A crash-on-launch dies in well under 5 s, so a still-running process after 5 s is the signal. |
+| `smoke.log` captured and `cat`-ed on failure | The panic or trap message is otherwise lost, because a backgrounded GUI process writes nothing to the step log. |
+| `uname -m` vs `matrix.arch` guard | The `x86_64` leg **cross-compiles on an arm64 runner**, so its binary cannot run natively. Skipping there is correct; failing would be a false alarm. The arm64 leg genuinely runs. |
+
+This step exists because of a real bug: `AppDelegate` did not `override init()`, so
+`@NSApplicationDelegateAdaptor` reached a Swift-synthesised stub that traps with
+`EXC_BAD_INSTRUCTION` / SIGILL (exit 132). It compiled cleanly and only failed **at runtime**, on the
+user's Intel Mac — which is exactly the class of defect a green build cannot catch.
+
+### Step 9 — Create DMG
+
+```bash
+BUNDLE="dist/RosettaStone.app"
 create-dmg \
   --volname "Rosetta Stone Installer" \
   --window-pos 200 120 \
   --window-size 600 400 \
   --icon-size 100 \
-  --icon "RosettaStone-AppleSilicon.app" 150 190 \
-  --hide-extension "RosettaStone-AppleSilicon.app" \
+  --icon "RosettaStone.app" 150 190 \
+  --hide-extension "RosettaStone.app" \
   --app-drop-link 450 190 \
   --no-internet-enable \
-  "RosettaStone-AppleSilicon.dmg" \
-  "RosettaStone-AppleSilicon.app" \
+  "dist/${{ matrix.output_name }}.dmg" \
+  "$BUNDLE" \
   || true
 ```
 
@@ -265,29 +309,39 @@ create-dmg \
 | `--window-pos 200 120` | Position of the Finder window when the DMG opens. |
 | `--window-size 600 400` | Finder window size inside the DMG. |
 | `--icon-size 100` | Icon size, chosen to fit the 600×400 window comfortably. |
-| `--icon "<app>" 150 190` | Places the app icon at x=150, y=190. |
-| `--hide-extension "<app>"` | Hides the `.app` extension so the mounted volume reads `RosettaStone-AppleSilicon`, not `RosettaStone-AppleSilicon.app`. |
+| `--icon "RosettaStone.app" 150 190` | Places the app icon at x=150, y=190. Referenced by **bundle name**, so it must match the staged `.app` exactly. |
+| `--hide-extension "RosettaStone.app"` | Hides the `.app` extension, so the mounted volume shows a clean **Rosetta Stone** icon rather than `RosettaStone.app`. |
 | `--app-drop-link 450 190` | Creates the **/Applications** symlink at x=450, y=190 — the standard drag-to-install target. |
 | `--no-internet-enable` | Skips the `.DS_Store` background artwork step; deterministic and faster. |
-| Final positional args | Output DMG path, then the source items to include. |
+| Final positional args | Output DMG path (keeps the arch suffix), then the source item to include. |
 | `\|\| true` | Keep the step green if `create-dmg` exits non-zero while warning about quarantine attributes or permissions that are artifacts of building on a CI runner rather than defects in the image. The **next** step independently fails the job if the DMG is genuinely absent or empty, so this cannot mask a real failure. |
 
-The `cd dist` matters: `create-dmg` resolves the source item (`"<output_name>.app"`) relative to
-the current working directory, and both the source and the output live in `dist/`.
+Note the asymmetry that Phase 8 introduced: the **source** is the architecture-neutral
+`dist/RosettaStone.app`, while the **output** keeps `matrix.output_name`. Both the input and the
+output are `dist/`-relative and absolute-by-prefix paths, so the step no longer needs `cd dist` —
+the `BUNDLE` variable keeps the staged path and the arch-suffixed output name in one block, with no
+chance of the two drifting apart.
 
-### Step 9 — Verify DMG
+### Step 10 — Verify DMG
+
+The step asserts in two layers, because a DMG can exist and still be wrong.
 
 | Check | Purpose |
 |-------|---------|
 | `[ ! -f "$DMG" ]` | The DMG was actually created. |
-| `[ ! -s "$DMG" ]` | It is not zero bytes. A truncated or failed image is the realistic failure mode after the `\|\| true` in step 8. |
+| `[ ! -s "$DMG" ]` | It is not zero bytes. A truncated or failed image is the realistic failure mode after the `\|\| true` in step 9. |
+| `hdiutil attach -nobrowse -readonly` | Mounts the image read-only and invisible in Finder, so the real payload can be inspected. `-nobrowse` keeps the runner's Finder from reacting. |
+| `find "$MOUNT_POINT" -maxdepth 1 -name '*.app'` | Lists the `.app` bundles at the volume root. `-maxdepth 1` deliberately ignores nested helpers such as `Contents/…/Helper.app`. |
+| `APP_COUNT != 1` → `::error::` | Exactly one `.app` must be present. Two would mean a stale artefact was staged alongside the new build. |
+| `APP_NAME != "RosettaStone.app"` → `::error::` | **The naming guarantee.** This is what makes the Phase 8 rule enforceable rather than aspirational: if any step ever renames the bundle again, the job fails here instead of shipping an `/Applications/RosettaStone-Intel.app` to users. |
 | `echo "::error::…"` | Surfaces the failure as an annotation on the workflow run, so the cause is visible in the Actions UI and not only in the raw log. |
-| `ls -lh "$DMG"` | Records the size, so a suspiciously small or absurdly large DMG is obvious. |
+| `trap … EXIT` → `hdiutil detach` | Detaches on every exit path, including `exit 1`, so a failed assertion never leaves a mounted image behind on the runner. |
 
-Failing here is the last line of defence: a missing or empty DMG should never be uploaded as an
-artifact or attached to a release. `if-no-files-found: error` in step 10 is the second line.
+Failing here is the last line of defence: a missing, empty or wrongly-named DMG should never be
+uploaded as an artifact or attached to a release. `if-no-files-found: error` in step 11 is the
+second line.
 
-### Step 10 — Upload artifact
+### Step 11 — Upload artifact
 
 ```yaml
 - uses: actions/upload-artifact@v4
@@ -358,11 +412,22 @@ the top level so this job is authorised to create the release.
 | Item | Value |
 |------|-------|
 | Built product | `build/Build/Products/Release/RosettaStone.app` |
-| Packaged bundle | `dist/RosettaStone-AppleSilicon.app` · `dist/RosettaStone-Intel.app` |
+| Packaged bundle | `dist/RosettaStone.app` — **same name on both legs** |
+| Installed app | `/Applications/RosettaStone.app` — **same name on every Mac** |
 | Apple Silicon DMG | `dist/RosettaStone-AppleSilicon.dmg` |
 | Intel DMG | `dist/RosettaStone-Intel.dmg` |
 | Artifact names | `RosettaStone-AppleSilicon-dmg` · `RosettaStone-Intel-dmg` |
 | DMG volume name | `Rosetta Stone Installer` |
+
+**The rule in one line:** the architecture suffix appears in the `.dmg` filename and the artifact
+name, and **nowhere else** — never in the `.app` bundle name.
+
+| Layer | Carries the arch suffix? | Why |
+|-------|--------------------------|-----|
+| DMG file name | **Yes** | Two downloads must be distinguishable at the Releases page (ADR-005). |
+| Artifact name | **Yes** | The two uploads would otherwise overwrite each other. |
+| `.app` bundle name | **No** | It is what the user sees in `/Applications`. A chip-specific name there is an implementation detail leaking into the UI, and it makes "which copy do I delete?" a support question. |
+| `PRODUCT_NAME` in `project.yml` | **No** | Fixed at `RosettaStone`; the LaunchAgent path and CI both key off it. |
 
 The DMG filename does not embed the version, so two runs of the same tag are distinguishable only by
 content. The version *is* carried inside the bundle's `Info.plist` (`CFBundleShortVersionString` /
@@ -390,22 +455,28 @@ xcodebuild -project RosettaStone.xcodeproj -scheme RosettaStone \
            ARCHS=arm64 ONLY_ACTIVE_ARCH=NO \
            CODE_SIGNING_ALLOWED=NO build
 
-# 2) Copy the product and ad-hoc sign it
+# 2) Copy the product and ad-hoc sign it -- one bundle name, no per-leg rename
 mkdir -p dist
-cp -R build/Build/Products/Release/RosettaStone.app dist/RosettaStone-AppleSilicon.app
-codesign --force --deep --sign - dist/RosettaStone-AppleSilicon.app
-codesign --verify --verbose=2 dist/RosettaStone-AppleSilicon.app
+BUNDLE="dist/RosettaStone.app"
+cp -R build/Build/Products/Release/RosettaStone.app "$BUNDLE"
+codesign --force --deep --sign - "$BUNDLE"
+codesign --verify --verbose=2 "$BUNDLE"
 
-# 3) Build and check the DMG
-cd dist
+# 3) Build and check the DMG -- source is the neutral bundle, output keeps the suffix
 create-dmg --volname "Rosetta Stone Installer" --window-pos 200 120 \
   --window-size 600 400 --icon-size 100 \
-  --icon "RosettaStone-AppleSilicon.app" 150 190 \
-  --hide-extension "RosettaStone-AppleSilicon.app" \
+  --icon "RosettaStone.app" 150 190 \
+  --hide-extension "RosettaStone.app" \
   --app-drop-link 450 190 --no-internet-enable \
-  RosettaStone-AppleSilicon.dmg "RosettaStone-AppleSilicon.app" || true
+  dist/RosettaStone-AppleSilicon.dmg "$BUNDLE" || true
 
-ls -lh RosettaStone-AppleSilicon.dmg
+ls -lh dist/RosettaStone-AppleSilicon.dmg
+
+# 4) Inspect the payload -- this is what CI asserts
+MP="$(mktemp -d)"; hdiutil attach -nobrowse -readonly -mountpoint "$MP" \
+  dist/RosettaStone-AppleSilicon.dmg
+ls -1 "$MP"                 # expect: Applications  RosettaStone.app
+hdiutil detach "$MP"
 ```
 
 ---

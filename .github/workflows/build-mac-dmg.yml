@@ -129,70 +129,130 @@ jobs:
       # 5) [แทนที่การประกอบ .app ด้วยมือ: mkdir + cat Info.plist + PkgInfo heredoc]
       #    ตอนนี้ Xcode สร้าง bundle ให้ครบทั้ง Info.plist, PkgInfo, binary
       #    executable และ Resources อยู่แล้ว จึงเหลือแค่ก๊อปมันออกมาไว้ใน
-      #    dist/ ตามชื่อของ leg นี้
+      #    dist/ โดยไม่เปลี่ยนชื่อ
       #    Info.plist มาจาก RosettaStone/Support/Info.plist ผ่านค่า
       #    INFOPLIST_FILE ใน project.yml และ LSMinimumSystemVersion ยังคงเป็น 10.15
+      #
+      #    Phase 8 — ชื่อ bundle ต้องเป็น RosettaStone.app เสมอ
+      #    เดิมขั้นนี้ copy ไปเป็น dist/<output_name>.app ทำให้แอปที่ติดตั้ง
+      #    ลงใน /Applications กลายเป็น RosettaStone-Intel.app / RosettaStone-AppleSilicon.app
+      #    ซึ่งชื่อไฟล์ที่ผู้ใช้เห็นต้องไม่ขึ้นกับสถาปัตยกรรมเครื่อง
+      #    suffix ของสถาปัตยกรรมอยู่เฉพาะชื่อไฟล์ .dmg และ artifact เท่านั้น
+      #    (ขั้นที่ 10 จะ mount DMG แล้ว assert ชื่อนี้อีกชั้น กันไม่ให้มีการ rename กลับมา)
       # ------------------------------------------------------------------
       - name: Collect app bundle
         run: |
           set -euo pipefail
+          BUNDLE="dist/RosettaStone.app"
           mkdir -p dist
-          cp -R build/Build/Products/Release/RosettaStone.app \
-                "dist/${{ matrix.output_name }}.app"
+          cp -R build/Build/Products/Release/RosettaStone.app "$BUNDLE"
           echo "---- เนื้อหาใน bundle ----"
-          ls -l "dist/${{ matrix.output_name }}.app/Contents"
+          ls -l "$BUNDLE/Contents"
 
       # ------------------------------------------------------------------
       # 6) เซ็นแบบ ad-hoc (ไม่ใช้ Developer ID — ดู ADR-003)
       #    -deep ครอบทุก framework/nested code ที่อยู่ใน .app
       #    -f     เขียนทับลายเซ็นเดิม
+      #    เป้าหมายคือ bundle ชื่อเดียว RosettaStone.app เหมือนขั้นที่ 5
       # ------------------------------------------------------------------
       - name: Ad-hoc codesign
         run: |
           set -euo pipefail
-          codesign --force --deep --sign - "dist/${{ matrix.output_name }}.app"
-          codesign --verify --verbose=2 "dist/${{ matrix.output_name }}.app"
+          BUNDLE="dist/RosettaStone.app"
+          codesign --force --deep --sign - "$BUNDLE"
+          codesign --verify --verbose=2 "$BUNDLE"
 
       # ------------------------------------------------------------------
-      # 7) ติดตั้งเครื่องมือสร้าง DMG
+      # 7) smoke test — ยิงแอปที่ build เสร็จแล้วจริง แล้วดูว่ามันรอด 5 วินาทีไหม
+      #    บั๊กคลาสนี้เคยทำให้แอปตายทันทีตอนเปิด: AppDelegate ไม่ได้ override init()
+      #    ทำให้ @NSApplicationDelegateAdaptor เรียก -init ที่ Swift สร้างเป็น stub
+      #    ซึ่ง trap (EXC_BAD_INSTRUCTION / SIGILL) — compile ผ่าน แต่พังตอนรัน
+      #    การรันจริงหลัง codesign จึงเป็น gate เดียวที่จับได้
+      #
+      #    - รัน 2 ครั้ง: ครั้งแรกเปิดปกติ (mode A) ครั้งที่สอง --menu-bar-only (mode B)
+      #      เพราะสองโหมดเข้า init คนละทาง
+      #    - uname -m เทียบกับ matrix.arch: runner รันสถาปัตยกรรมที่ตัวเองเป็นเท่านั้น
+      #      ถ้าไม่ตรงก็ skip ไม่ใช่ fail (Intel ไม่รันบน Apple Silicon แบบ native)
+      # ------------------------------------------------------------------
+      - name: Smoke test (launch and stay alive)
+        run: |
+          set -uo pipefail
+          BUNDLE="dist/RosettaStone.app"
+          BIN="$BUNDLE/Contents/MacOS/RosettaStone"
+
+          RUNNER_ARCH="$(uname -m)"
+          if [ "$RUNNER_ARCH" != "${{ matrix.arch }}" ]; then
+            echo "::notice::skipping smoke test — leg builds ${{ matrix.arch }} but runner is ${RUNNER_ARCH}"
+            exit 0
+          fi
+
+          for args in "" "--menu-bar-only"; do
+            echo "---- launching: ${BIN} ${args} ----"
+            rm -f smoke.log
+            # shellcheck disable=SC2086
+            "$BIN" $args > smoke.log 2>&1 &
+            PID=$!
+            sleep 5
+            if kill -0 "$PID" 2>/dev/null; then
+              echo "OK: alive after 5s (args: '${args}', pid ${PID})"
+              kill "$PID" 2>/dev/null || true
+              wait "$PID" 2>/dev/null || true
+            else
+              echo "::error::smoke test failed — process exited early (args: '${args}')"
+              echo "---- captured output ----"
+              cat smoke.log || true
+              exit 1
+            fi
+          done
+          echo "smoke test passed for both launch modes"
+
+      # ------------------------------------------------------------------
+      # 8) ติดตั้งเครื่องมือสร้าง DMG
       # ------------------------------------------------------------------
       - name: Install create-dmg
         run: |
           brew install create-dmg
 
       # ------------------------------------------------------------------
-      # 8) สร้าง DMG แบบลากวางลง Applications
+      # 9) สร้าง DMG แบบลากวางลง Applications
       #     --icon / --app-drop-link = ตำแหน่งไอคอนและลิงก์ /Applications
       #     --hide-extension         = ซ่อน .app ให้เห็นเป็นชื่อสะอาด
-      #     cd dist                  = create-dmg หาไฟล์ต้นทางแบบ relative
+      #     BUNDLE                   = ชื่อ bundle เดียว RosettaStone.app ที่ติดตั้ง
+      #                                แล้วลงใน /Applications ต้องเป็นชื่อนี้เสมอ
+      #     ชื่อไฟล์ .dmg ยังคงใช้ suffix ตามสถาปัตยกรรมตามเดิม
       #     || true                  = ไม่ล้มเหลว เพราะ create-dmg มักเตือนเรื่อง
       #                              quarantine attribute / สิทธิ์บางอย่าง
       #                              บน runner ซึ่งไม่กระทบความถูกต้องของ DMG
-      #                              (ขั้นตอนถัดไปยังตรวจไฟล์อีกชั้น)
+      #                              (ขั้นตอนถัดไปยังตรวจไฟล์และเนื้อหาอีกชั้น)
       # ------------------------------------------------------------------
       - name: Create DMG
         run: |
-          cd dist
+          set -euo pipefail
+          BUNDLE="dist/RosettaStone.app"
           create-dmg \
             --volname "Rosetta Stone Installer" \
             --window-pos 200 120 \
             --window-size 600 400 \
             --icon-size 100 \
-            --icon "${{ matrix.output_name }}.app" 150 190 \
-            --hide-extension "${{ matrix.output_name }}.app" \
+            --icon "RosettaStone.app" 150 190 \
+            --hide-extension "RosettaStone.app" \
             --app-drop-link 450 190 \
             --no-internet-enable \
-            "${{ matrix.output_name }}.dmg" \
-            "${{ matrix.output_name }}.app" \
+            "dist/${{ matrix.output_name }}.dmg" \
+            "$BUNDLE" \
             || true
 
       # ------------------------------------------------------------------
-      # 9) ตรวจสอบว่า DMG ถูกสร้างจริงก่อนอัปโหลด
-      #     ถ้าไม่มีไฟล์ หรือขนาดเป็น 0 ให้ fail ทันที พร้อมรายงานเข้า log
-      #     ของ workflow ผ่าน annotation ::error::
+      # 10) ตรวจสอบว่า DMG ถูกสร้างจริง และเนื้อหาข้างในถูกต้อง
+      #     ชั้นที่ 1: ไฟล์ DMG มีอยู่และไม่ว่างเปล่า  (เดิม)
+      #     ชั้นที่ 2 (Phase 8): mount แล้วตรวจว่าข้างในมี .app พอดีหนึ่งตัว
+      #              และชื่อเป็น RosettaStone.app เสมอ ไม่ใช่ชื่อผสมสถาปัตยกรรม
+      #              เพราะชื่อ bundle คือสิ่งที่ผู้ใช้เห็นใน /Applications
+      #     detach เสมอ แม้ assertion จะ fail ก็ไม่ทิ้ง mount ค้างไว้
       # ------------------------------------------------------------------
       - name: Verify DMG
         run: |
+          set -uo pipefail
           DMG="dist/${{ matrix.output_name }}.dmg"
           if [ ! -f "$DMG" ] || [ ! -s "$DMG" ]; then
             echo "::error::ไม่พบไฟล์ DMG ที่ ${DMG} (หรือไฟล์ว่างเปล่า)"
@@ -203,8 +263,40 @@ jobs:
           echo "---- ขนาดไฟล์ ----"
           ls -lh "$DMG"
 
+          # ---- ชั้นที่ 2: ตรวจเนื้อหาใน DMG ----
+          MOUNT_POINT="$(mktemp -d /tmp/rs-dmg-check.XXXXXX)"
+          # detach ให้แน่นอน แม้ขั้นตอนถัดไปจะ exit 1
+          trap 'hdiutil detach "$MOUNT_POINT" -quiet >/dev/null 2>&1 || true; rmdir "$MOUNT_POINT" >/dev/null 2>&1 || true' EXIT
+
+          if ! hdiutil attach -nobrowse -readonly -mountpoint "$MOUNT_POINT" "$DMG" >/dev/null; then
+            echo "::error::เปิด DMG ที่ ${DMG} ไม่สำเร็จ (hdiutil attach ล้มเหลว)"
+            exit 1
+          fi
+
+          echo "---- เนื้อหาใน DMG ----"
+          ls -1 "$MOUNT_POINT"
+
+          # จับเฉพาะ .app ที่อยู่ระดับบนสุดของ volume (ไม่ลงไปนับข้างใน bundle)
+          APPS="$(find "$MOUNT_POINT" -maxdepth 1 -name '*.app' -print)"
+          APP_COUNT="$(printf '%s\n' "$APPS" | grep -c '\.app$' || true)"
+          APP_NAME="$(basename "$(printf '%s\n' "$APPS" | grep '\.app$' | head -n 1)" 2>/dev/null || true)"
+
+          if [ "$APP_COUNT" != "1" ]; then
+            echo "::error::คาดหวัง .app พอดี 1 ตัวใน ${DMG} แต่พบ ${APP_COUNT} ตัว"
+            echo "$APPS"
+            exit 1
+          fi
+
+          if [ "$APP_NAME" != "RosettaStone.app" ]; then
+            echo "::error::ชื่อแอปใน ${DMG} ต้องเป็น RosettaStone.app แต่พบ ${APP_NAME}"
+            echo "::error::ชื่อ bundle ที่ติดตั้งลง /Applications ต้องไม่มี suffix สถาปัตยกรรม"
+            exit 1
+          fi
+
+          echo "OK: พบ .app ชื่อ RosettaStone.app พอดีหนึ่งตัวใน ${DMG}"
+
       # ------------------------------------------------------------------
-      # 10) อัปโหลด DMG ขึ้นเป็น artifact ของ run นี้
+      # 11) อัปโหลด DMG ขึ้นเป็น artifact ของ run นี้
       #     แยก artifact ตามชื่อสถาปัตยกรรม จะได้ไม่ทับกัน
       # ------------------------------------------------------------------
       - name: Upload DMG artifact

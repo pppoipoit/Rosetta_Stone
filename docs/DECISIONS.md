@@ -205,25 +205,29 @@ de-facto standard for open-source macOS projects.
 |------|------------|
 | An external Homebrew dependency in CI. | Installed explicitly in its own step, so a failure is clearly attributable. |
 | Less control over low-level DMG layout than raw `hdiutil`. | Accepted — the extra flexibility is not needed for a single-app image. |
-| Icon positions are hard-coded pixel coordinates. | Documented in [CI-CD.md §4](CI-CD.md#step-8--create-dmg) so they can be tuned knowingly. |
+| Icon positions are hard-coded pixel coordinates. | Documented in [CI-CD.md §4](CI-CD.md#step-9--create-dmg) so they can be tuned knowingly. |
 
 ### Command used
 
 ```bash
-cd dist
+BUNDLE="dist/RosettaStone.app"
 create-dmg \
   --volname "Rosetta Stone Installer" \
   --window-pos 200 120 \
   --window-size 600 400 \
   --icon-size 100 \
-  --icon "RosettaStone-AppleSilicon.app" 150 190 \
-  --hide-extension "RosettaStone-AppleSilicon.app" \
+  --icon "RosettaStone.app" 150 190 \
+  --hide-extension "RosettaStone.app" \
   --app-drop-link 450 190 \
   --no-internet-enable \
-  "RosettaStone-AppleSilicon.dmg" \
-  "RosettaStone-AppleSilicon.app" \
+  "dist/${{ matrix.output_name }}.dmg" \
+  "$BUNDLE" \
   || true
 ```
+
+> **Updated in Phase 8.** The command originally ran `cd dist` and staged a bundle renamed to
+> `<output_name>.app`. The bundle is now always `RosettaStone.app`, so the source is
+> architecture-neutral while the output DMG keeps the arch suffix. See [ADR-005](DECISIONS.md#adr-005).
 
 | Flag | Purpose |
 |------|---------|

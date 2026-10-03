@@ -24,11 +24,18 @@
 
 set -euo pipefail
 
-# ตำแหน่งแอป 2 แบบ: ชื่อที่ build จริงใช้ (RosettaStone.app ไม่มีเว้นวรรค)
-# และชื่อที่ผู้ใช้อาจเห็นใน Finder (Rosetta Stone.app)
-APP_CANDIDATES=(
-  "/Applications/RosettaStone.app"
-  "/Applications/Rosetta Stone.app"
+# ชื่อ bundle ทางการ — เป็นชื่อเดียวกันทุกสถาปัตยกรรมตั้งแต่ Phase 8
+# ตัวแอปเขียนชื่อ .app ว่า RosettaStone.app เสมอ ไม่มี suffix -Intel / -AppleSilicon
+# เพราะสิ่งที่ผู้ใช้เห็นใน /Applications ต้องไม่ผูกกับชิปของเครื่อง
+TARGET_APP="/Applications/RosettaStone.app"
+
+# ชื่อที่ผู้ใช้อาจเห็นใน Finder (ถ้าเคย rename เอง) — รองรับไว้ แต่ไม่ใช่ชื่อทางการ
+FALLBACK_APP="/Applications/Rosetta Stone.app"
+
+# ชื่อจาก Phase ก่อนหน้า — ตรวจพบแล้วเตือนให้ลบ แต่ไม่ลบให้เอง
+LEGACY_APPS=(
+  "/Applications/RosettaStone-Intel.app"
+  "/Applications/RosettaStone-AppleSilicon.app"
 )
 
 echo "=============================================="
@@ -36,9 +43,9 @@ echo " Rosetta Stone — แก้ปัญหา Gatekeeper / Gatekeeper fix"
 echo "=============================================="
 echo
 
-# เลือกแอปที่มีอยู่จริง
+# เลือกแอปที่มีอยู่จริง — ชื่อทางการก่อนเสมอ
 TARGET=""
-for candidate in "${APP_CANDIDATES[@]}"; do
+for candidate in "$TARGET_APP" "$FALLBACK_APP"; do
   if [ -d "$candidate" ]; then
     TARGET="$candidate"
     break
@@ -53,6 +60,33 @@ if [ -z "$TARGET" ]; then
       break
     fi
   done
+fi
+
+# เตือนเรื่อง bundle รุ่นเก่าที่ยังอยู่ใน /Applications
+# ไม่ลบให้เอง เพราะการลบแอปใน /Applications เป็นการลบไฟล์ให้ผู้ใช้
+LEGACY_FOUND=()
+for legacy in "${LEGACY_APPS[@]}"; do
+  if [ -d "$legacy" ]; then
+    LEGACY_FOUND+=("$legacy")
+  fi
+done
+
+if [ ${#LEGACY_FOUND[@]} -gt 0 ]; then
+  echo "=============================================="
+  echo " พบแอปรุ่นเก่าที่ยังอยู่ใน /Applications"
+  echo " Legacy app bundles still present in /Applications"
+  echo "=============================================="
+  for legacy in "${LEGACY_FOUND[@]}"; do
+    echo "  - $legacy"
+  done
+  echo
+  echo "แอปรุ่นใหม่ใช้ชื่อ $TARGET_APP เสมอ ไม่ว่าเครื่องจะเป็น Intel หรือ Apple Silicon"
+  echo "แนะนำให้ลบแอปรุ่นเก่าทิ้งเอง เพื่อไม่ให้มีสองตัวชนกันใน /Applications:"
+  echo "  ลากทิ้งใน Finder / หรือรันคำสั่งนี้:"
+  echo "  sudo rm -rf \"/Applications/RosettaStone-Intel.app\" \"/Applications/RosettaStone-AppleSilicon.app\""
+  echo
+  echo "(The script does not delete them for you — removing apps must stay your decision.)"
+  echo
 fi
 
 if [ -z "$TARGET" ]; then

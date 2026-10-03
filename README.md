@@ -101,6 +101,10 @@ variable), or an unidentifiable model (the app fails safe). **Diagnostics…** r
 3. Eject the DMG.
 4. Launch **Applications → Rosetta Stone**.
 
+> **One app name, every Mac.** The architecture suffix lives **only** in the `.dmg` and artifact
+> file names. The bundle itself is always **`RosettaStone.app`**, so it always installs to
+> `/Applications/RosettaStone.app` — whether you downloaded the Intel or the Apple Silicon DMG.
+
 > **First-run warning — ad-hoc signature.** Release builds are **ad-hoc signed**
 > (`codesign --sign -`), not signed with a paid Apple Developer ID. macOS Gatekeeper will
 > report *"the app is damaged"* or *"cannot be opened because the developer cannot be

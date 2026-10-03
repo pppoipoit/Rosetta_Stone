@@ -58,14 +58,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     // MARK: - Init
 
-    /// - Parameter mode: forces a mode, overriding the argument scan and the plist read.
-    ///   Exists so the mode is testable without mutating `CommandLine` or the user's
-    ///   login items.
-    init(mode: AppMode? = nil) {
-        self.mode = mode ?? AppMode.resolve(
+    /// Designated initializer. **This `override` is load-bearing — do not remove it.**
+    ///
+    /// SwiftUI's `@NSApplicationDelegateAdaptor(AppDelegate.self)` creates the delegate
+    /// through the Objective-C `-init` selector, not through any Swift initializer we
+    /// write. Declaring our own designated initializer suppresses the inherited
+    /// `NSObject.init()`, so Swift synthesises an `@objc init()` stub that traps. The app
+    /// then dies with `EXC_BAD_INSTRUCTION` / SIGILL inside `AppDelegate.init()` during
+    /// `main` — before any window appears, and only at *runtime*, so CI stays green.
+    /// Overriding `init()` is what makes that selector a real, working entry point.
+    /// The smoke-test step in `.github/workflows/build-mac-dmg.yml` guards this.
+    override init() {
+        self.mode = AppMode.resolve(
             menuBarOnlyArgument: AppDelegate.requestedMenuBarOnly(),
             launchAgentInstalled: StartupManager().isInstalled())
         super.init()
+    }
+
+    /// Forces a mode, overriding the argument scan and the LaunchAgent read.
+    /// Exists so the mode is testable without mutating `CommandLine` or the user's
+    /// login items.
+    convenience init(mode: AppMode) {
+        self.init()
+        self.mode = mode
     }
 
     /// `true` when `--menu-bar-only` appears anywhere in the process arguments.
