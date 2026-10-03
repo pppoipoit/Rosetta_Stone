@@ -32,8 +32,10 @@ panel. That was the problem being solved.
   `Theme.pending`). It is defined as `pending ≠ actual`, so toggling a switch and toggling it
   straight back leaves no dot behind — a dot for a change that does not exist would be a lie.
 - **`ApplyBar`** — the two master buttons, disabled while the queue is empty so the panel teaches
-  the rule by refusing to apply nothing. Apply carries ⌘↩ on macOS 11+ and ↩ on the 10.15 floor,
-  via `ConditionalCommandReturnShortcut`, because `keyboardShortcut(_:modifiers:)` is macOS 11+.
+  the rule by refusing to apply nothing. Apply carries ⌘↩ on macOS 11+, via
+  `ConditionalCommandReturnShortcut`. **Both** `keyboardShortcut` overloads are macOS 11+ in this
+  SDK, so the 10.15 branch deliberately applies *no* keyboard shortcut rather than reaching for one
+  that does not exist; the button itself is fully usable by click on every supported version.
 - **`SystemCommands.runBatched(_:)`** — the single-auth engine. It splits commands by
   `requiresAdmin`, concatenates every privileged command into **one** shell script inside a single
   `do shell script … with administrator privileges`, and derives per-command outcomes from stdout

@@ -589,8 +589,9 @@ Separate **pending state** from **actual state**, and commit the pending set in 
   It is view-local, in-memory, and never read by a service.
 - **The switch renders the pending value**, so the user sees what they asked for; an **orange ●**
   beside the title marks that it is not yet true of the system.
-- **Two master buttons** — **❌ ยกเลิก** (discard, runs nothing) and **✅ ตกลง** (commit, ⌘↩) —
-  are disabled while the queue is empty.
+- **Two master buttons** — **❌ ยกเลิก** (discard, runs nothing) and **✅ ตกลง** (commit) — are
+  disabled while the queue is empty. Apply also takes ⌘↩ on macOS 11+, where `keyboardShortcut`
+  exists; on the 10.15 floor it does not, so the button is click-only there.
 - **Committing builds one `FeatureCommand` per pending row** and hands them to
   `SystemCommands.runBatched`, which concatenates every privileged command into a single
   `do shell script … with administrator privileges`.
@@ -640,6 +641,14 @@ through a cast, and a mis-cast silently degrades to "no pending change" — the 
 change, presses Apply, and nothing happens. Three cases (`toggle(Bool)`, `action`) carry no
 ambiguity and are exhaustively checkable in one switch.
 
+**Why the ⌘↩ shortcut is absent on macOS 10.15.** `keyboardShortcut` is a macOS 11+ API in **both**
+overloads — there is no SwiftUI keyboard shortcut available on the 10.15 floor at all. Rather than
+fake one, the Apply button is click-only there. A related trap is worth recording: an
+`if #available` written directly inside a `@ViewBuilder` **loses its narrowing**, because
+`buildEither(first:second:)` is not itself guarded, and the compiler then still rejects the 11+ API.
+The working pattern is to select between two *types*, each carrying its own `@available` — see
+`ConditionalCommandReturnShortcut` / `CommandReturnShortcut`.
+
 ### Consequences
 
 | Consequence | |
@@ -649,6 +658,7 @@ ambiguity and are exhaustively checkable in one switch.
 | Failed rows stay queued | Retry is a second ✅, not a re-staging exercise |
 | Cancellation is silent and non-destructive | Matches the pre-existing rule for `.cancelled` |
 | The panel is 60 pt taller | `ContentView.panelHeight` 540 → 600; absorbed by `Spacer`, so no row was shrunk |
+| **No keyboard shortcut on macOS 10.15** | `keyboardShortcut` is 11+ in *both* overloads, so the 10.15 branch applies none. The Apply button itself is unaffected — a documented degradation, not a defect. |
 | Pending changes are lost if the view is recreated | Accepted: the window is retained, and a half-configured Mac is not worth persisting across launches |
 | Confirmations moved to stage time | Strictly better — the warning is read *before* the password prompt, not between it and the command |
 

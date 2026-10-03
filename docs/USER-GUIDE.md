@@ -531,13 +531,17 @@ and waits.
    appears beside the row title. **Nothing on your Mac has changed yet.**
 2. **Look at the bottom of the panel.** The count on **✅ ตกลง** tells you how many changes are
    waiting, and each marked row is visible above.
-3. **Press ✅ ตกลง** (or **⌘↩**) to apply them all at once. You are asked for your password
-   **once**, no matter how many of the queued changes need it.
+3. **Press ✅ ตกลง** (or **⌘↩** on macOS 11 and newer) to apply them all at once. You are asked
+   for your password **once**, no matter how many of the queued changes need it.
 4. **Or press ❌ ยกเลิก** to throw the queue away. This changes nothing on your Mac and asks for
    no confirmation, because nothing was changed.
 
 Both buttons are greyed out while the queue is empty — that is how you tell the panel is waiting
 on you.
+
+> **On macOS 10.15 there is no keyboard shortcut for ✅.** macOS made `keyboardShortcut` an
+> 11+ API, so the ⌘↩ shortcut exists only from macOS 11 onwards. Click the button — it works
+> identically on every version Rosetta Stone supports.
 
 ### 12.2 Why it works this way
 

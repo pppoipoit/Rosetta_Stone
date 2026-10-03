@@ -240,21 +240,40 @@ struct ApplyBar: View {
     }
 }
 
-/// Applies ⌘↩ on macOS 11+, and ↵ on macOS 10.15.
+/// Applies ⌘↩ as the Apply shortcut on **macOS 11 and newer**.
 ///
-/// `keyboardShortcut(_:modifiers:)` is macOS 11+; the single-argument
-/// `keyboardShortcut(_:)` is 10.11+. Keeping the floor working means the modifier form has to
-/// sit behind an availability check, which is why this is a separate `ViewModifier` rather
-/// than an inline call in `ApplyBar`.
+/// ## Why the two-type split
+///
+/// `keyboardShortcut` is macOS 11+ in this SDK — *both* overloads, including the
+/// single-argument one. There is therefore no SwiftUI keyboard-shortcut API at all on the
+/// 10.15 floor, so the 10.15 branch below deliberately applies **no** shortcut rather than
+/// reaching for one that does not exist.
+///
+/// The availability requirement lives on `CommandReturnShortcut`'s own declaration and is
+/// **not** written as `if #available` inside a single `body`. That is deliberate: an
+/// `if #available` inside a `@ViewBuilder` loses its narrowing, because `buildEither(first:second:)`
+/// is not itself guarded, and the compiler then rejects the 11+ API as unreachable-by-guard.
+/// Selecting between two *types* — each carrying its own `@available` — is the pattern that
+/// actually holds.
 struct ConditionalCommandReturnShortcut: ViewModifier {
 
     @ViewBuilder
     func body(content: Content) -> some View {
         if #available(macOS 11.0, *) {
-            content.keyboardShortcut(.return, modifiers: .command)
+            content.modifier(CommandReturnShortcut())
         } else {
-            content.keyboardShortcut(.return)
+            content
         }
+    }
+}
+
+/// The ⌘↩ binding itself, isolated behind its availability so the 11+ API is only ever named
+/// inside a guarded branch.
+@available(macOS 11.0, *)
+private struct CommandReturnShortcut: ViewModifier {
+
+    func body(content: Content) -> some View {
+        content.keyboardShortcut(.return, modifiers: .command)
     }
 }
 

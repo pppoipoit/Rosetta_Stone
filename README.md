@@ -51,7 +51,7 @@ Design constraints that shape everything:
 > authentication dialog. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#5-privilege-escalation-strategy).
 
 > **Queued?** ✅ means the panel stages the change instead of running it. Pressing **✅ ตกลง**
-> (⌘↩) commits the whole queue with **one** password dialog for every privileged row;
+> commits the whole queue with **one** password dialog for every privileged row (⌘↩ on macOS 11+);
 > **❌ ยกเลิก** discards it. An **orange ●** beside a row title marks it as staged but not
 > yet applied. Menu-bar clicks and `rosettastone://` URL actions bypass the queue and run
 > immediately, because they are shortcuts rather than batch configuration.
@@ -66,7 +66,7 @@ Auto Boot           [ lock ]  /  [ toggle ]     <- Intel MacBook only
 Rosetta 2           [ Install ]                 <- Apple Silicon only
 Quick Tools         [ Spotlight ] [ DNS ] [ Cache ]
 ------------------ status banner ------------------
-                   [ ❌ ยกเลิก ] [ ✅ ตกลง ]  <- master buttons, ⌘↩
+                   [ ❌ ยกเลิก ] [ ✅ ตกลง ]  <- master buttons (⌘↩ on macOS 11+)
 ```
 
 Dark theme throughout. The **Quick Tools** block is a 3-column grid of transient action buttons —

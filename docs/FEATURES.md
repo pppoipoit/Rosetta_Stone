@@ -672,7 +672,7 @@ The two rules that follow from this:
 | Button | Shortcut | Enabled when | Effect |
 |--------|----------|--------------|--------|
 | **❌ ยกเลิก** | — | Queue is non-empty and nothing is in flight | Discards every pending entry. **Runs no command** and raises no confirmation — nothing was changed, so there is nothing to confirm. |
-| **✅ ตกลง** | ⌘↩ (macOS 11+); ↩ on 10.15 | Queue is non-empty and nothing is in flight | Builds one command per pending row and commits them as a single batch. |
+| **✅ ตกลง** | ⌘↩ on macOS 11+; no shortcut on 10.15 | Queue is non-empty and nothing is in flight | Builds one command per pending row and commits them as a single batch. |
 
 Both are disabled whenever the queue is empty, which is what teaches the rule: Apply is not
 available until something is staged.
