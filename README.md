@@ -333,7 +333,7 @@ The ten icon sizes in `RosettaStone/Support/AppIcon.appiconset/` are generated f
 [`scripts/generate-icons.sh`](scripts/generate-icons.sh), which uses ImageMagick on macOS/Linux
 and falls back to `scripts/generate-icons.ps1` (System.Drawing, nothing to install) on Windows.
 Because CC BY-SA is a copyleft/share-alike licence, any redistribution of Rosetta Stone must keep
-this attribution and license the icon under CC BY-SA 3.0 (ADR-007).
+this attribution and license the icon under CC BY-SA 3.0 (ADR-010).
 
 ### Development
 
