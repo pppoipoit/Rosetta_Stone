@@ -12,6 +12,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 The first working build. Application code, the XcodeGen project specification and the CI
 pipeline now exist and both matrix legs build green on GitHub Actions.
 
+### Phase 10 — icon pipeline made fully automated
+
+**The icon set is now complete and regenerable on macOS and Windows alike.** Phase 9 committed the
+`Contents.json` and the generator script but never the images, so the app built and ran with a
+generic icon. This phase adds the master and all ten sizes, and removes the ImageMagick-only
+restriction that made the pipeline macOS-exclusive.
+
+#### Added
+
+- **`RosettaStone/Resources/AppIcon.png`** — the 1024×1024 master, and the **ten** generated PNGs in
+  `RosettaStone/Support/AppIcon.appiconset/` (16/32/64/128/256/512/1024 px as 1x/2x pairs).
+- **`scripts/generate-icons.ps1`** — a System.Drawing backend, so Windows needs **nothing
+  installed**. `generate-icons.sh` detects `MINGW`/`MSYS`/`CYGWIN` and delegates to it; macOS and
+  Linux keep using ImageMagick. Both backends walk the same ladder of halvings, so the ten outputs
+  are byte-identical whichever one runs.
+
+#### Fixed
+
+- **The master is square.** `actool` rejects a non-square source image, and the published original is
+  **229×353** — no square or higher-resolution variant is published. A straight copy would have
+  failed the build, so the artwork is now *fitted* (never stretched, which would have made the slab
+  oval) onto a 1024×1024 transparent canvas, inset to 82% so the macOS icon squircle does not clip
+  its top and bottom.
+- **The `convert` false positive on Windows.** `C:\Windows\System32\convert.exe` is the NTFS
+  filesystem converter, not ImageMagick, so a PATH check for `convert` finds it and then fails with
+  a baffling "improperly formed image" error. Detection now prefers `magick` (ImageMagick 7) and
+  reaches for `convert` only on POSIX, and the Windows path never calls it at all.
+- **Aliased small sizes.** Each resize now steps down a ladder of ~2× halvings instead of jumping
+  1024→16 in one pass, which averaged 64 source pixels into each output pixel and turned the thin
+  white glyph bands into noise at the menu-bar and Dock sizes.
+- **The 1024 target read an empty temp file.** With the ladder introduced, the size-1024 rung never
+  entered the loop and fell through to a final convert reading an untouched `mktemp` file. It now
+  reads the master, and consecutive rungs alternate two buffers so no step reads and writes the
+  same file.
+
+#### Verified
+
+- All ten files exist at exactly the dimensions `Contents.json` declares, every one with `Format32bppArgb`
+  and a fully transparent corner — no black box, which is the defect `-background none -alpha set`
+  exists to prevent. Re-running the generator is byte-identical (SHA-256 unchanged), so `git status`
+  stays clean when nothing actually changed.
+- **Caveat worth stating plainly:** the shell backend was not executed on this host — Git is
+  installed without `bash`, so `bash -n` could not run either. Its dispatch and ladder logic were
+  verified by simulating the arithmetic, not by executing the script.
+
 ### Phase 9 — deferred queue, single-auth batching, app icon, credits
 
 **Clicking a switch no longer runs a command.** The panel became a staging area: every row records

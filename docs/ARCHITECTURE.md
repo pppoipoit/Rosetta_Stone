@@ -684,7 +684,7 @@ required macOS sizes are generated from it:
 
 ```mermaid
 flowchart LR
-    A["RosettaStone/Resources/AppIcon.png<br/>1024×1024 master<br/>(CC BY-SA 3.0, Abshifflett)"] --> B["scripts/generate-icons.sh<br/>ImageMagick convert -resize"]
+    A["RosettaStone/Resources/AppIcon.png<br/>1024×1024 square master<br/>(CC BY-SA 3.0, Abshifflett)"] --> B["scripts/generate-icons.sh<br/>ImageMagick, or generate-icons.ps1<br/>on Windows via System.Drawing"]
     B --> C["RosettaStone/Support/AppIcon.appiconset/<br/>10 PNGs: 16, 32, 64, 128,<br/>256, 512, 1024 px as 1x/2x pairs"]
     C --> D["project.yml resources:<br/>AppIcon.appiconset"]
     D --> E["actool at build time<br/>ASSETCATALOG_COMPILER_APPICON_NAME=AppIcon"]
@@ -692,12 +692,14 @@ flowchart LR
     F --> G["CFBundleIconFile = AppIcon<br/>Finder, Dock, Spotlight"]
 ```
 
-Three deliberate properties:
+Four deliberate properties:
 
 | Property | Reason |
 |----------|--------|
 | The generated PNGs are **committed** | A plain `xcodebuild` then needs no ImageMagick; CI and every contributor build the same icon. The script only runs when the master changes. |
 | `-background none -alpha set` on every resize | Dropping it flattens alpha against black and leaves a dark box around the glyph in every size — a defect that only shows on a light wallpaper. |
+| The master is **square**, and is fitted rather than stretched | `actool` rejects a non-square source image. The published original is 229×353 and no square variant exists, so the artwork is fitted onto a 1024×1024 transparent canvas at 82% — inset so the macOS icon squircle does not clip its top and bottom, and never stretched, which would have made the slab oval. |
+| Resizes walk a **ladder of halvings**, in both backends | A single 1024→16 reduction averages ~64 source pixels into each output pixel, which no single-pass kernel represents; the thin white glyph bands alias into noise. Each rung is ~2×, which every filter handles cleanly. The PowerShell backend uses the same ladder, so the outputs are byte-identical on macOS and Windows. |
 | The icon lives in its **own** catalog, not `Assets.xcassets` | `Assets.xcassets` is already copied wholesale by the sources glob; a second `AppIcon` set inside it would make `actool` report a duplicate definition. It is therefore excluded from the glob and added under `resources:`. |
 
 ### Layering rules

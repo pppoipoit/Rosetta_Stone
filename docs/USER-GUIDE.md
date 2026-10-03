@@ -70,8 +70,34 @@ into `RosettaStone/Support/AppIcon.appiconset/`. If you ever want to change the 
 master and re-run:
 
 ```bash
-brew install imagemagick      # once
+brew install imagemagick      # once, macOS/Linux only
 bash scripts/generate-icons.sh
+```
+
+On **Windows** there is no ImageMagick to install, and `convert.exe` in
+`C:\Windows\System32` is the NTFS filesystem converter rather than ImageMagick.
+Run the same script from Git Bash — it detects Windows and delegates to
+`scripts/generate-icons.ps1`, which resizes with the System.Drawing API that
+ships with Windows:
+
+```bash
+bash scripts/generate-icons.sh
+# or, equivalently, without Git Bash:
+powershell -ExecutionPolicy Bypass -File scripts\generate-icons.ps1
+```
+
+Both backends walk the same ladder of halvings instead of resizing straight to
+each target, so the ten PNGs are byte-identical whichever one you use.
+
+The upstream original is 229×353 and no square version is published. macOS
+requires a square source, so the master is the artwork fitted (never stretched)
+onto a 1024×1024 transparent canvas, with the art inset to 82% so the macOS icon
+squircle does not clip its top and bottom. To regenerate the master from a fresh
+copy of the original rather than from the existing master:
+
+```bash
+powershell -ExecutionPolicy Bypass -File scripts\generate-icons.ps1 \
+    -SourcePath icon/icon.png
 ```
 
 If you installed the app and it shows a **generic icon**, the icon files were not included in the
