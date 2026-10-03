@@ -191,7 +191,10 @@ struct PendingDot: View {
             .frame(width: size, height: size)
             // A faint halo so the dot stays legible against both gradient ends.
             .shadow(color: Theme.pending.opacity(0.55), radius: 2)
-            .accessibilityIdentifier("pending-dot")
+            // No `.accessibilityIdentifier(_:)` here: that modifier is **macOS 11+** and this
+            // app deploys to 10.15, so naming it would fail to compile against the floor. The
+            // dot is decorative — the pending state it marks is also announced by the Apply
+            // button's count and the status banner — so it needs no accessibility element.
     }
 }
 
@@ -245,6 +248,7 @@ struct ApplyBar: View {
 /// than an inline call in `ApplyBar`.
 struct ConditionalCommandReturnShortcut: ViewModifier {
 
+    @ViewBuilder
     func body(content: Content) -> some View {
         if #available(macOS 11.0, *) {
             content.keyboardShortcut(.return, modifiers: .command)

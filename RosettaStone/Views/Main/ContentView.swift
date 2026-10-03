@@ -574,22 +574,25 @@ struct ContentView: View {
             return
         }
 
-        coordinator.applyBatch(commands) { [weak self] report in
-            guard let self = self else { return }
-            // Cleared here rather than optimistically at the press, so a **cancelled** batch
-            // leaves the queue intact and the user can simply press Apply again. Entries whose
-            // command never made it into the batch (already satisfied) are dropped, because
-            // they can never become runnable.
+        coordinator.applyBatch(commands) { report in
+            // No `[weak self]`: `ContentView` is a **struct**, so `weak` does not apply to it.
+            // A struct captured in an escaping closure copies its state — and `@State` storage is
+            // backed by a reference, so the captured copy stays live.
+            //
+            // The queue is cleared here rather than optimistically at the press, so a
+            // **cancelled** batch leaves it intact and ✅ can simply be pressed again. Entries
+            // whose command never made it into the batch (already satisfied) are dropped,
+            // because they can never become runnable.
             if report.wasCancelled {
                 return
             }
-            self.pendingChanges = self.pendingChanges.filter { feature, _ in
+            pendingChanges = pendingChanges.filter { feature, _ in
                 report.outcome(for: feature) != nil
             }
             // A per-item dialog is raised only when something actually failed; the all-success
             // case is already covered by the footer banner.
             if report.allSucceeded == false {
-                self.batchReport = report
+                batchReport = report
             }
         }
     }
