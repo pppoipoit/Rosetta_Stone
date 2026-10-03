@@ -62,12 +62,17 @@ to the menu-bar mode, turn **Run at Startup** ON (§6.1).
 ### 3.1 About the app icon
 
 The icon you see in **Applications** is generated from a single 1024×1024 master image,
-`RosettaStone/Resources/AppIcon.png` — *Rosetta Stone icon* by
-[Abshifflett](https://commons.wikimedia.org/wiki/User:Abshifflett), licensed
-[CC BY-SA 3.0](https://creativecommons.org/licenses/by-sa/3.0). macOS needs that one image in ten
-different sizes, so `scripts/generate-icons.sh` resizes the master into all ten and writes them
-into `RosettaStone/Support/AppIcon.appiconset/`. If you ever want to change the icon, replace the
-master and re-run:
+`RosettaStone/Resources/AppIcon.png` — [Rosetta Stone icon](https://commons.wikimedia.org/wiki/File:Rosetta_Stone_icon.png)
+by [Abshifflett](https://commons.wikimedia.org/wiki/User:Abshifflett), licensed under
+[CC BY-SA 3.0](https://creativecommons.org/licenses/by-sa/3.0/).
+
+**Modified:** the original 229×353 artwork was fitted (not stretched) onto a transparent
+1024×1024 canvas, then resized into the ten app-icon sizes. Redistribution must keep this
+attribution and license the icon under CC BY-SA 3.0.
+
+macOS needs that one image in ten different sizes, so `scripts/generate-icons.sh` resizes the
+master into all ten and writes them into `RosettaStone/Support/AppIcon.appiconset/`. If you ever
+want to change the icon, replace the master and re-run:
 
 ```bash
 brew install imagemagick      # once, macOS/Linux only

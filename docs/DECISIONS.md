@@ -702,12 +702,15 @@ Producing a good icon has costs:
 
 ### Decision
 
-Use the **Rosetta Stone icon** by
-[Abshifflett](https://commons.wikimedia.org/wiki/User:Abshifflett), licensed
-[CC BY-SA 3.0](https://creativecommons.org/licenses/by-sa/3.0), and:
+Use the **[Rosetta Stone icon](https://commons.wikimedia.org/wiki/File:Rosetta_Stone_icon.png)**
+by [Abshifflett](https://commons.wikimedia.org/wiki/User:Abshifflett), licensed under
+[CC BY-SA 3.0](https://creativecommons.org/licenses/by-sa/3.0/), and:
+
+**Modified:** the original 229×353 artwork was fitted (not stretched) onto a transparent
+1024×1024 canvas, then resized into the ten app-icon sizes.
 
 1. **Attribute it prominently** in `README.md` §Credits and `Info.plist`, naming the author, the
-   licence, and linking the source.
+   licence, linking the source file, linking the licence deed, and stating the modification.
 2. **Derive every size from one 1024×1024 master** (`RosettaStone/Resources/AppIcon.png`) with
    `scripts/generate-icons.sh`. Ten hand-drawn sizes would drift; one master plus a script cannot.
 3. **Commit the generated PNGs**, so a plain `xcodebuild` needs no ImageMagick — CI and every

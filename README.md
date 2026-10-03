@@ -324,7 +324,9 @@ See the repository's `LICENSE` file.
 
 **App icon:** [Rosetta Stone icon](https://commons.wikimedia.org/wiki/File:Rosetta_Stone_icon.png)
 by [Abshifflett](https://commons.wikimedia.org/wiki/User:Abshifflett),
-[CC BY-SA 3.0](https://creativecommons.org/licenses/by-sa/3.0)
+licensed under [CC BY-SA 3.0](https://creativecommons.org/licenses/by-sa/3.0/).
+**Modified:** the original 229×353 artwork was fitted (not stretched) onto a
+transparent 1024×1024 canvas, then resized into the ten app-icon sizes.
 
 The ten icon sizes in `RosettaStone/Support/AppIcon.appiconset/` are generated from the
 1024×1024 master at `RosettaStone/Resources/AppIcon.png` by
