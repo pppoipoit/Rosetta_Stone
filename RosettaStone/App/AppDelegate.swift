@@ -292,7 +292,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         let minimize = NSMenuItem(title: "Minimize",
                                   action: #selector(NSWindow.performMiniaturize(_:)),
-                                  keyEquivalent: "m")
+                                  // Deliberately **no** shortcut. macOS convention gives
+                                  // Minimize ⌘M, but ⌘M is the mini panel everywhere in this
+                                  // app's documentation and in the dropdown menu, and a menu
+                                  // that binds one chord to two different actions silently
+                                  // picks a winner rather than reporting the clash.
+                                  keyEquivalent: "")
         windowMenu.addItem(minimize)
 
         windowMenuItem.submenu = windowMenu
