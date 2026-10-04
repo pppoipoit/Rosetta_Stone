@@ -71,7 +71,51 @@ struct MiniAppView: View {
             Divider().padding(.horizontal, Theme.contentPadding)
             rows
             Spacer(minLength: 0)
-// MARK: - Rows
+            footer
+            commitBar
+        }
+        .frame(width: MiniAppView.panelWidth, height: MiniAppView.panelHeight)
+        .background(Theme.panelBackground)
+        .sheet(item: $batchReport) { report in
+            BatchReportSheet(report: report) { batchReport = nil }
+        }
+    }
+
+    // MARK: - Chrome
+
+    /// Title, Gatekeeper status dot, and the close button.
+    ///
+    /// The status dot is the same `GatekeeperStatusDot` the main panel uses, because
+    /// "is this Mac protected?" is the one fact worth surfacing in a panel this small.
+    private var header: some View {
+        HStack(spacing: 8) {
+            Text("Rosetta Stone")
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundColor(Theme.title)
+
+            GatekeeperStatusDot(state: coordinator.gatekeeperBypassed)
+
+            Spacer(minLength: 0)
+
+            // A real close button rather than relying on a traffic light: the panel carries a
+            // `.titled` mask with a hidden title bar, so there is no red dot for the user
+            // to find.
+            Button(action: onDismiss) {
+                Text("✕")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundColor(Theme.secondaryText)
+                    .frame(width: 18, height: 18)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(PlainButtonStyle())
+            .accessibilityTitle("Close the mini panel")
+        }
+        .padding(.horizontal, Theme.contentPadding)
+        .padding(.top, 14)
+        .padding(.bottom, 12)
+    }
+
+    // MARK: - Rows
 
     private var rows: some View {
         VStack(spacing: 0) {
@@ -146,49 +190,7 @@ struct MiniAppView: View {
         .padding(.bottom, 14)
         .opacity(pending.isEmpty || coordinator.isBusy ? 0.45 : 1)
     }
-            footer
-            commitBar
-        }
-        .frame(width: MiniAppView.panelWidth, height: MiniAppView.panelHeight)
-        .background(Theme.panelBackground)
-        .sheet(item: $batchReport) { report in
-            BatchReportSheet(report: report) { batchReport = nil }
-        }
-    }
 
-    // MARK: - Chrome
-
-    /// Title, Gatekeeper status dot, and the close button.
-    ///
-    /// The status dot is the same `GatekeeperStatusDot` the main panel uses, because
-    /// "is this Mac protected?" is the one fact worth surfacing in a panel this small.
-    private var header: some View {
-        HStack(spacing: 8) {
-            Text("Rosetta Stone")
-                .font(.system(size: 14, weight: .semibold))
-                .foregroundColor(Theme.title)
-
-            GatekeeperStatusDot(state: coordinator.gatekeeperBypassed)
-
-            Spacer(minLength: 0)
-
-            // A real close button rather than relying on a traffic light: the panel carries a
-            // `.titled` mask with a hidden title bar, so there is no red dot for the user
-            // to find.
-            Button(action: onDismiss) {
-                Text("✕")
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundColor(Theme.secondaryText)
-                    .frame(width: 18, height: 18)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(PlainButtonStyle())
-            .accessibilityTitle("Close the mini panel")
-        }
-        .padding(.horizontal, Theme.contentPadding)
-        .padding(.top, 14)
-        .padding(.bottom, 12)
-    }
     // MARK: - The deferred queue (ADR-009)
     //
     // Deliberately a *copy* of `ContentView`'s four operations rather than a shared
