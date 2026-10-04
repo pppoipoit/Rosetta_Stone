@@ -196,12 +196,22 @@ The window is dark-themed and laid out top to bottom as follows.
 
 | Row | Control | What it does |
 |-----|---------|--------------|
-| **Run at Startup** | Toggle | Switch modes: install / remove the login item and the menu-bar icon |
 | **Gatekeeper** | Toggle | Disable / re-enable macOS Gatekeeper |
+| **Auto Boot** | Toggle | Power on automatically — **Intel MacBook only** |
 | **Hidden Files** | Toggle | Show / hide dotfiles in Finder |
-| **Auto Boot** | Toggle | Power on automatically — **Intel only** |
+| **Run at Startup** | Toggle | Switch modes: install / remove the login item and the menu-bar icon |
 | **Rosetta 2** | Install button | Install the Rosetta 2 translator — **Apple Silicon only** |
+| *(separator)* | | |
 | **Quick Tools** | 3 buttons | Spotlight / DNS / Cache |
+| **OK** / **CANCEL** | 2 buttons | Commit or discard everything you have staged |
+
+> **Reordered in Phase 11.** Gatekeeper and Hidden Files now lead, and **Run at Startup moved
+> down to fourth** so the switch that changes the app's entire mode is not the first thing under
+> your cursor.
+
+Next to the title in the header there is a **status dot** — 🟢 green when Gatekeeper is doing
+its job, 🔴 red when it has been disabled, ⚪️ grey when the state could not be read. It is there
+so you can check the most security-relevant fact about your Mac without reading any row.
 
 ### The menu-bar icon (power-user mode only)
 
@@ -209,11 +219,42 @@ The glyph exists only while **Run at Startup** is ON (§6.1).
 
 | Gesture | What it does |
 |---------|--------------|
-| **Left-click** | Toggles Gatekeeper immediately — no menu, no window. You get the password prompt, then a small toast under the icon with the result |
-| **Right-click** (or Control-click) | Opens the full menu: Open Main Window, Toggle Hidden Files, Flush DNS, Rebuild Spotlight, Clear System Cache… (asks first), **Diagnostics…** (⌘D), Quit (⌘Q) |
+| **Left-click** | Opens the **mini panel** — a small window with three switches, an **OK** / **CANCEL** bar and an **Open Main App** button |
+| **Right-click** (or Control-click) | Opens the full menu: Open Main Window, Mini Panel… (⌘M), Toggle Hidden Files, Flush DNS, Rebuild Spotlight, Clear System Cache… (asks first), **Diagnostics…** (⌘D), Quit Rosetta Stone (⌘Q) |
 
-Hover the glyph and the tooltip tells you Gatekeeper's current state and what a left-click will
-do.
+Hover the glyph and the tooltip tells you Gatekeeper's current state and which gesture does
+what.
+
+> **What changed in Phase 11.** A left-click used to toggle Gatekeeper immediately. It now opens
+> the mini panel instead. A single click that raises a password prompt and lowers a **security**
+> setting was not something to discover by accident, and there was nowhere in the menu-bar app to
+> see or undo what it had just done. Gatekeeper is still one click away — it is the first row of
+> the mini panel.
+
+### The mini panel
+
+A small window (300 × 372 pt) that appears under the menu-bar glyph.
+
+| Element | What it is |
+|---------|-----------|
+| Header | Title, the Gatekeeper status dot, and a ✕ close button |
+| **Gatekeeper** | Toggle — allow apps from anywhere |
+| **Hidden Files** | Toggle — show dotfiles in Finder |
+| **Run at Startup** | Toggle — the mode switch itself |
+| **Open Main App** | Opens the full panel |
+| **OK** / **CANCEL** | Commit or discard, exactly as in the full panel |
+
+**It queues, it does not act.** Clicking a switch stages the change and puts an orange ● on it,
+just like the full panel — nothing runs until you press **OK**, and then you get **one** password
+dialog for the whole set. Click the glyph again, or click ✕, or click anywhere else, and it
+closes without applying anything.
+
+Only three rows are here on purpose. **Auto Boot** writes firmware NVRAM and **Rosetta 2** takes
+minutes; neither belongs in a panel someone opens for a two-second glance. Both are one
+**Open Main App** click away.
+
+Because the panel may be closed by the time a command finishes, the outcome of a **Gatekeeper**
+change is also shown as a toast under the glyph.
 
 > **The icon does not appear at all?** On **macOS 26 Tahoe and later** you can hide it in System
 > Settings: **System Settings → Menu Bar → Rosetta Stone → allow the item in the Menu Bar**. Turn
@@ -325,8 +366,13 @@ what you have actually disabled rather than a vague "on".
 
 **ON means hidden files are visible** in Finder.
 
-- Toggling it restarts Finder, so your desktop and Dock briefly disappear and reappear. This is
-  normal and takes about a second.
+- **Finder is not restarted.** The change appears in your open Finder windows immediately and
+  nothing on screen blinks. (Up to Phase 11 this row restarted Finder, which made the Dock and
+  desktop disappear for a second and lost every window's scroll position.)
+- The **first** time you use this, macOS may ask permission for Rosetta Stone to **control
+  Finder**. That is normal — it is what lets the app refresh your windows. If you decline, the
+  setting is still saved and applies to Finder windows you open later; only the instant refresh
+  is skipped.
 - **No password required** — this is the only feature in the app that does not ask.
 
 ### 6.4 Auto Boot — Intel MacBook only
@@ -539,10 +585,10 @@ machine.
 | A Shortcut did nothing | URL actions require **Run at Startup ON** (§9). With the toggle off, the panel opens and says so. In power-user mode, actions perform silently once running — see §9.7. |
 | Gatekeeper did not switch off on macOS 15+ | On Sequoia/Tahoe you must also choose **Anywhere** in System Settings; the app opens the pane and reminds you (§6.2). |
 | Password prompt never appears | Check that a previous `osascript` dialog is not hidden behind another window. Only one privileged action runs at a time — and the Apply button commits everything with a **single** prompt (§12). |
-| "Operation not permitted" | You cancelled the prompt, or the command needs root and did not get it. Press **✅ ตกลง** again — cancelling leaves your queue intact (§12.5). |
-| A switch moved but nothing changed | That is the pending dot working as designed: you have **staged** the change. Press **✅ ตกลง** (⌘↩) to apply it, or **❌ ยกเลิก** to discard it (§12, §13). |
-| ✅ ตกลง is greyed out | Nothing is queued. Staging a change that already matches your Mac removes it instead of queueing it, so there is nothing to apply. |
-| Some changes failed | The dialog lists each change with ✅ or ❌. Fix the cause and press **✅ ตกลง** again — failed rows stay queued (§12.5). |
+| "Operation not permitted" | You cancelled the prompt, or the command needs root and did not get it. Press **OK** again — cancelling leaves your queue intact (§12.5). |
+| A switch moved but nothing changed | That is the pending dot working as designed: you have **staged** the change. Press **OK** (⌘↩) to apply it, or **CANCEL** to discard it (§12, §13). |
+| **OK** is greyed out | Nothing is queued. Staging a change that already matches your Mac removes it instead of queueing it, so there is nothing to apply. |
+| Some changes failed | The dialog lists each change with ✅ or ❌. Fix the cause, then re-stage the rows you want to retry and press **OK** again — **OK always empties the queue**, so nothing is pre-filled for you (§12.5, §13.2). |
 | Rosetta 2 install fails | You need an internet connection. On macOS 11.0–11.2 the component is not bundled; update to 11.3+ first. |
 | Auto Boot toggle is greyed | Auto Boot works on **Intel MacBooks only**. Three reasons: (1) Apple Silicon — firmware owns the setting and NVRAM is reset every cold boot; (2) a desktop — there is no lid; (3) the model could not be read, and the app fails safe. The row itself names your reason, and hovering repeats it (§6.4). **Diagnostics…** reports *Auto Boot supported* and *Auto Boot lock reason*. |
 | Gatekeeper toggle keeps flipping back | Your Mac is managed by an organisation profile. That profile wins. |
@@ -560,11 +606,11 @@ and waits.
 
 1. **Flip or press whatever you want.** A switch moves, a button lights up, and an orange ●
    appears beside the row title. **Nothing on your Mac has changed yet.**
-2. **Look at the bottom of the panel.** The count on **✅ ตกลง** tells you how many changes are
+2. **Look at the bottom of the panel.** The count on **OK** tells you how many changes are
    waiting, and each marked row is visible above.
-3. **Press ✅ ตกลง** (or **⌘↩** on macOS 11 and newer) to apply them all at once. You are asked
+3. **Press **OK**** (or **⌘↩** on macOS 11 and newer) to apply them all at once. You are asked
    for your password **once**, no matter how many of the queued changes need it.
-4. **Or press ❌ ยกเลิก** to throw the queue away. This changes nothing on your Mac and asks for
+4. **Or press **CANCEL**** to throw the queue away. This changes nothing on your Mac and asks for
    no confirmation, because nothing was changed.
 
 Both buttons are greyed out while the queue is empty — that is how you tell the panel is waiting
@@ -609,12 +655,15 @@ So the sequence is always: *warn → queue → one password prompt → apply*.
 
 | Situation | What happens |
 |-----------|--------------|
-| Everything worked | A green banner: **สำเร็จทั้งหมด** · N change(s) applied. The dots disappear. |
-| Something failed | A dialog listing **every** change with a ✅ or ❌, so you can see which ones worked. Failed rows keep their orange ● and stay queued. |
-| You dismissed the password prompt | Nothing at all. The queue is untouched — press ✅ again when you are ready. |
+| Everything worked | A green banner: **สำเร็จทั้งหมด** · N change(s) applied. All the dots disappear. |
+| Something failed | A dialog listing **every** change with a ✅ or ❌, so you can see which ones worked. **All the dots clear too** — the dialog, not the dots, is where the failures are reported. |
+| You dismissed the password prompt | Nothing at all. The queue is untouched — press **OK** again when you are ready. |
 
 On macOS 15 or later, successfully turning Gatekeeper off still opens System Settings so you can
-choose **Anywhere** (§6.2). That step is skipped if the command failed or you cancelled.
+choose **Anywhere** (§6.2). That step is skipped if the command failed or you cancelled. It now
+opens about **one second** after the command succeeds, rather than immediately: the
+`Gatekeeper: disabled` toast appears first, so the outcome is readable before System Settings
+takes over the screen.
 
 ---
 
@@ -622,14 +671,22 @@ choose **Anywhere** (§6.2). That step is skipped if the command failed or you c
 
 ### 13.1 What it means
 
-The ● sits beside a row title when that row holds a change you have **staged but not applied**.
+The ● sits **on the switch itself** — its top-right corner — when that row holds a change you
+have **staged but not applied**.
 
-It answers one question: *"what is about to change if I press ✅?"*
+> **Changed in Phase 11.** The dot used to sit beside the row title, where it read as a bullet
+> in the label. It now rides on the switch, because the question it answers is *"will this
+> switch change?"* — so it belongs on the switch, where that answer is acted on.
+
+It answers one question: *"what is about to change if I press **OK**?"*
 
 | You see | It means |
 |---------|----------|
-| ● next to a title | A change is waiting. The switch shows what you asked for; your Mac still shows the old value. |
+| ● on a switch | A change is waiting. The switch shows what you asked for; your Mac still shows the old value. |
 | No ● | The switch reflects reality. Either nothing is queued, or what is queued matches what the system already reports. |
+
+The Rosetta 2 **Install** button has no switch, so its ● stays beside the title — the same
+orange token, just anchored where it has to be.
 
 ### 13.2 The dot has a precise meaning
 
@@ -638,15 +695,17 @@ worth knowing:
 
 - **Toggling a switch back removes the dot.** If you flip a switch and flip it straight back, the
   pending change is deleted rather than stored — a ● for a change that does not exist would be a lie.
-- **After applying, the dot disappears only if it worked.** Rosetta Stone re-reads the real state
-  of your Mac after every change rather than trusting that the command said OK. A row that shows
-  ● after a failed batch really did not change.
+- **After applying, the dot always disappears.** Rosetta Stone re-reads the real state of your Mac
+  after every change rather than trusting that the command said OK, so the switch always shows
+  what your Mac is actually doing. Since Phase 11 this is unconditional: **OK empties the queue
+  whatever the outcome.** Failures are reported in the results dialog instead, so a dot can only
+  ever mean "waiting", never "broken".
 
 ### 13.3 It is not an error
 
 An orange ● means *"pending"*, not *"broken"*. Nothing is wrong and nothing is in progress — you
-simply have not pressed ✅ yet. It clears on its own once you apply, or immediately if you press
-❌ ยกเลิก.
+simply have not pressed **OK** yet. It clears on its own once you apply, or immediately if you
+press **CANCEL**.
 
 ---
 

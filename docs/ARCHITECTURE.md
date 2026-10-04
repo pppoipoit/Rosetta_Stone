@@ -380,7 +380,7 @@ interpolate raw user input, runtime-discovered file names, or URL parameters.
 |---|---------|-----------|-----|
 | 1 | Run at Startup | **Yes** (admin) | The plist is written by a root shell so the install cannot be blocked by a read-only or sandboxed context; no `launchctl` call is made (§2) |
 | 2 | Gatekeeper | **Yes** (admin) | `spctl --master-disable` requires root |
-| 3 | Hidden Files | No | `defaults write com.apple.finder` and `killall Finder` work as the user |
+| 3 | Hidden Files | No | `defaults write com.apple.finder` works as the user. The AppleScript that refreshes open windows is also unprivileged, though macOS may ask once for Automation permission — declining it does not undo the write |
 | 4 | Auto Boot | **Yes** (admin) | `nvram` is root-only |
 | 5 | Rosetta 2 | **Yes** (admin) | `softwareupdate --install-rosetta` is root-only |
 | 6 | Spotlight Rebuild | **Yes** (admin) | `mdutil -E /` requires root |
@@ -422,7 +422,7 @@ sequenceDiagram
     participant OS as macOS Authorization
     participant SH as /bin/sh (root)
 
-    U->>V: presses ✅ ตกลง
+    U->>V: presses **OK**
     V->>V: build FeatureCommand per pending row<br/>(FeatureID.allCases order)
     V->>C: applyBatch(commands)
     C->>C: take single-operation lock<br/>(reject if already busy)
@@ -446,7 +446,6 @@ sequenceDiagram
 
     S-->>C: BatchResult (ordered per command)
 
-    C->>C: post-steps once (killall Finder)
     C->>C: macOS 15+ Gatekeeper step, only if spctl succeeded
     C->>C: reloadState() — re-read actual truth
     C-->>V: BatchReport (main thread)
@@ -456,8 +455,8 @@ sequenceDiagram
     else any failed
         V->>U: per-item ✅/❌ dialog
     end
-    V->>V: clear successful rows from the queue
-    Note over V: failures stay queued for a retry
+    V->>V: clear the whole queue (Phase 11)
+    Note over V: only a dismissed Authorization dialog keeps it
 ```
 
 Four rules the batch must never break:
@@ -632,8 +631,8 @@ flowchart TD
 | `RosettaStone/App/` | `main.swift` (both entry points), `RosettaStoneApp`, `AppDelegate` — mode resolution, URL-scheme entry, reopen handling, live mode switching |
 | `RosettaStone/Models/` | `FeatureID` + `FeatureAvailability` (row copy, hardware gating on `MacProfile`, clear-cache warning), `AppMode`, `CommandResult` / `ProcessResult`, `DeferredChange` (`PendingChange`, `FeatureCommand`, `BatchItemResult`, `BatchReport`) |
 | `RosettaStone/Services/` | `SystemCommands` (the only place that spawns processes or elevates, plus the Gatekeeper version rule and `runBatched`), `FeatureCoordinator` (+ `FeatureCoordinator+Actions`, + the deferred queue), `StartupManager`, `SystemStateReader`, `CPUArchitecture`, `MacProfile` (model name + form factor, ADR-008), `URLActionRouter`, `GatekeeperPolicy`, `Trace` |
-| `RosettaStone/Views/Main/` | `ContentView` (toggle rows, pending dots, Rosetta row, Quick Tools grid, footer, Apply/Cancel bar, batch report sheet), `Components` (`PillSwitch`, `PendingDot`, `ApplyBar`, `TooltipHost`, `StatusBanner`), `Theme` |
-| `RosettaStone/Views/MenuBar/` | `MenuBarController` (status item, dropdown menu, panel window), `StatusItemToast`, `DiagnosticsPanel` |
+| `RosettaStone/Views/Main/` | `ContentView` (toggle rows in owner order, pending dots on the switches, Rosetta row, Quick Tools grid, footer, OK/CANCEL bar, batch report sheet), `Components` (`PillSwitch`, `PendingPillSwitch`, `PendingDot`, `GatekeeperStatusDot`, `ApplyBar`, `TooltipHost`, `StatusBanner`, `LockIcon`, the button styles), `Theme` (colours **plus the unified style registry every control resolves through**) |
+| `RosettaStone/Views/MenuBar/` | `MenuBarController` (status item, dropdown menu, main panel window, mini panel), `MiniAppView` (the mini panel's contents — its own deferred queue), `StatusItemToast`, `DiagnosticsPanel` |
 | `RosettaStone/Resources/` | `AppIcon.png` — the 1024×1024 master icon, and `Assets.xcassets` (`StatusBarIcon` only) |
 | `RosettaStone/Support/` | `Info.plist`, `RosettaStone.entitlements`, `AppIcon.appiconset` |
 
@@ -644,11 +643,11 @@ design exists to prevent.
 
 | | Actual state | Pending state |
 |---|--------------|---------------|
-| Owner | `FeatureCoordinator` (`@Published`) | `ContentView` (`@State pendingChanges`) |
+| Owner | `FeatureCoordinator` (`@Published`) | `ContentView` **and** `MiniAppView` (each `@State pending`) |
 | Contents | `runAtStartup`, `gatekeeperBypassed`, `hiddenFilesShown`, `autoBootEnabled`, `rosettaInstalled` | `[FeatureID: PendingChange]` |
 | Source of truth | The system — re-read after every write | The user's intent in this session |
-| Drawn as | The pill, unless something is pending | The pill (it wins) **and** an orange ● beside the title |
-| Lifecycle | Lives as long as the app | Lost when the panel's view is recreated |
+| Drawn as | The pill, unless something is pending | The pill (it wins) **and** an orange ● **on the switch** (Phase 11) |
+| Lifecycle | Lives as long as the app | Lost when that view's panel is dismissed |
 
 Rules that keep the two from bleeding into each other:
 
@@ -656,11 +655,37 @@ Rules that keep the two from bleeding into each other:
    just asked for.
 2. **The dot exists exactly when the two disagree.** Staging a value equal to the actual state
    *removes* the entry, so a switch flipped on and back off leaves nothing behind.
-3. **Actual state is always re-read after a write** — including after a batch. This is what clears
-   the dot for rows that took effect and keeps it for rows that did not.
-4. **Only `FeatureCoordinator` may write to actual state**; only four `ContentView` methods mutate
-   `pendingChanges` (`stageToggle`, `stageAction`, the completion handler of `applyPendingChanges`,
-   and `cancelPendingChanges`).
+3. **Actual state is always re-read after a write** — including after a batch. This is what
+   makes the switches show reality rather than what the command claimed.
+4. **Only `FeatureCoordinator` may write to actual state**; only four methods in each consumer
+   mutate its queue (`stageToggle`, `stageAction`, the completion handler of
+   `applyPendingChanges`, and `cancelPendingChanges`).
+5. **A completed batch empties the queue unconditionally** (Phase 11). The one exception is a
+   dismissed Authorization dialog — "not now", not a result — which keeps the queue so **OK** can
+   simply be pressed again. **CANCEL** clears it and calls `loadState()`.
+
+### Why the mini panel duplicates the queue
+
+`MiniAppView` keeps its **own** `[FeatureID: PendingChange]` rather than sharing
+`ContentView`'s. Sharing would mean hoisting the queue to a shared observable — and then the
+two panels could see and clear each other's staged changes, so a dot in one window would vanish
+because of a press in another. Two five-line copies of the same four operations is cheaper than
+that failure mode, and the two implementations sit side by side in two adjacent files.
+
+Both commit through the same `FeatureCoordinator.applyBatch`, so the "one password dialog per
+commit" guarantee holds for the mini panel exactly as it does for the main one.
+
+### The style registry
+
+`Theme` is not only a palette. Since Phase 11 it is also the single name every control resolves
+its appearance through — `Theme.primaryButton`, `.secondaryButton`, `.confirmButton`,
+`.destructiveButton`, `.quickToolButton`, `.quietLinkButton`, `.panelBackground`,
+`.accentColor`, `.toggle`. The style *types* still live in `Components.swift`; `Theme` is the
+address they are reached by.
+
+That indirection is what makes "the app looks inconsistent" a one-line fix rather than a hunt
+through call sites: there is one definition of what a primary button looks like, and both
+panels ask the same question to get it.
 
 ### The one command table
 

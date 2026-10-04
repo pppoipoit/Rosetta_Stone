@@ -588,10 +588,17 @@ Separate **pending state** from **actual state**, and commit the pending set in 
 - **Pending state** is new: `ContentView`'s `@State pendingChanges: [FeatureID: PendingChange]`.
   It is view-local, in-memory, and never read by a service.
 - **The switch renders the pending value**, so the user sees what they asked for; an **orange ●**
-  beside the title marks that it is not yet true of the system.
-- **Two master buttons** — **❌ ยกเลิก** (discard, runs nothing) and **✅ ตกลง** (commit) — are
-  disabled while the queue is empty. Apply also takes ⌘↩ on macOS 11+, where `keyboardShortcut`
-  exists; on the 10.15 floor it does not, so the button is click-only there.
+  **on the switch** marks that it is not yet true of the system. (Phase 11 moved the dot from
+  beside the title onto the switch itself, and gave it a third role: since OK now empties the
+  queue unconditionally, a dot can only ever mean "waiting", never "broken".)
+- **Two master buttons** — **CANCEL** (discard, runs nothing) and **OK** (commit) — are disabled
+  while the queue is empty. OK takes ⌘↩ and CANCEL takes ⌘⌫ on macOS 11+, where `keyboardShortcut`
+  exists; on the 10.15 floor it does not, so both are click-only there. The labels are English
+  (Phase 11): every other string in the app is English, so a Thai pair of buttons read as an
+  inconsistency rather than as localisation.
+- **A completed batch empties the whole queue**, successful or failed (Phase 11). The single
+  exception is a dismissed Authorization dialog, which keeps the queue so OK can be pressed
+  again — that is "not now", not a result. CANCEL clears it and calls `loadState()`.
 - **Committing builds one `FeatureCommand` per pending row** and hands them to
   `SystemCommands.runBatched`, which concatenates every privileged command into a single
   `do shell script … with administrator privileges`.
@@ -647,7 +654,10 @@ fake one, the Apply button is click-only there. A related trap is worth recordin
 `if #available` written directly inside a `@ViewBuilder` **loses its narrowing**, because
 `buildEither(first:second:)` is not itself guarded, and the compiler then still rejects the 11+ API.
 The working pattern is to select between two *types*, each carrying its own `@available` — see
-`ConditionalCommandReturnShortcut` / `CommandReturnShortcut`.
+`ConditionalCommandReturnShortcut` / `CommandReturnShortcut`. Phase 11 added
+`ConditionalCommandDeleteShortcut` / `CommandDeleteShortcut` for ⌘⌫ on CANCEL using the same
+split, and routed ⌘Q / ⌘W / ⌘M through AppKit `NSMenuItem`s instead, which have no such floor and
+therefore work on every supported version.
 
 ### Consequences
 
@@ -655,11 +665,11 @@ The working pattern is to select between two *types*, each carrying its own `@av
 |---|---|
 | One password dialog per batch, not per row | The whole point |
 | A batch can partially succeed, and says so per row | ✅/❌ per item; one failure never hides the successes |
-| Failed rows stay queued | Retry is a second ✅, not a re-staging exercise |
-| Cancellation is silent and non-destructive | Matches the pre-existing rule for `.cancelled` |
+| **A completed batch empties the queue** (Phase 11) | Accepted trade: retry is one click per row rather than a free pre-filled re-try. Bought: a dot can only ever mean "waiting", never "broken". |
+| Cancellation is silent and non-destructive | Matches the pre-existing rule for `.cancelled`. A dismissed password dialog is the one case that keeps the queue. |
 | The panel is 60 pt taller | `ContentView.panelHeight` 540 → 600; absorbed by `Spacer`, so no row was shrunk |
-| **No keyboard shortcut on macOS 10.15** | `keyboardShortcut` is 11+ in *both* overloads, so the 10.15 branch applies none. The Apply button itself is unaffected — a documented degradation, not a defect. |
-| Pending changes are lost if the view is recreated | Accepted: the window is retained, and a half-configured Mac is not worth persisting across launches |
+| **No keyboard shortcut on macOS 10.15** | `keyboardShortcut` is 11+ in *both* overloads, so the 10.15 branch applies none. The buttons themselves are unaffected — a documented degradation, not a defect. ⌘Q / ⌘W / ⌘M are AppKit menu items and *do* work on 10.15. |
+| Pending changes are lost if the view is recreated | Accepted: both panels are retained across hide/show, and a half-configured Mac is not worth persisting across launches |
 | Confirmations moved to stage time | Strictly better — the warning is read *before* the password prompt, not between it and the command |
 
 ### Alternatives considered

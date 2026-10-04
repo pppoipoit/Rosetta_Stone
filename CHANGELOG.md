@@ -12,6 +12,121 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 The first working build. Application code, the XcodeGen project specification and the CI
 pipeline now exist and both matrix legs build green on GitHub Actions.
 
+### Phase 11 — UI/UX overhaul + mini app mode
+
+**The menu-bar gadget grew a real interface, and the panel stopped contradicting itself.** Three
+changes carry most of the weight: the status item's left-click opens a **mini panel** instead of
+silently lowering a security setting; **OK empties the queue unconditionally**, so a pending dot
+can only ever mean "waiting"; and **Show Hidden Files no longer restarts Finder**.
+
+#### Added
+
+- **Mini app mode.** `RosettaStone/Views/MenuBar/MiniAppView.swift` — a 300 × 372 pt panel with
+  Gatekeeper, Hidden Files and Run at Startup, an **OK** / **CANCEL** bar, and **Open Main App**.
+  `MenuBarController` presents it in an `NSPanel` built lazily on the first left-click and
+  retained thereafter, positioned under the status item and clamped to the visible frame, and
+  dismissed on `didResignKey`. It **queues like the main panel** — nothing runs until OK, and a
+  commit still costs one password dialog.
+- **`Theme` is now a style registry**, not just a palette. Every button, toggle and panel in the
+  app resolves through `Theme.primaryButton` / `.secondaryButton` / `.confirmButton` /
+  `.destructiveButton` / `.quickToolButton` / `.quietLinkButton` / `.panelBackground` /
+  `.accentColor` / `.toggle`, so a look change is one edit instead of a hunt through call sites.
+  The style *types* stay in `Components.swift`; `Theme` is the name they are reached by.
+- **`FeatureID.displayName` and `FeatureID.description`**, with `title` and `detail` kept as
+  aliases. Every toggle now has an owner-specified name *and* a description, read from one table
+  so no two surfaces can name a feature differently. `FeatureID.panelRowOrder` states the display
+  order separately from `allCases`, which remains the URL-scheme table and the batch commit order.
+- **A Gatekeeper status dot** in the panel header and the mini panel header
+  (`GatekeeperStatusDot`). Three states, not two: 🟢 active, 🔴 bypassed, ⚪️ **could not be read** —
+  an unreadable status is never rendered green, because "I don't know" is not "safe".
+- **The main menu is built in code** (`AppDelegate.installMainMenu()`). `Info.plist` carries no
+  `NSMainNibFile`, so AppKit never installed a default menu — and an app with no application menu
+  has no ⌘Q, which is where macOS keeps the Quit item. This adds the application and Window menus,
+  making ⌘Q, ⌘W, ⌘M and ⌘H real.
+- **Keyboard shortcuts.** ⌘↩ commits the queue and ⌘⌫ discards it (both in the main and mini
+  panels, macOS 11+ only, via `ConditionalCommandReturnShortcut` /
+  `ConditionalCommandDeleteShortcut`); ⌘Q quits; **⌘W hides the panel back to the menu bar**;
+  ⌘M shows the mini panel; ⌘D opens Diagnostics.
+- **`Mini Panel…` in the right-click menu** (⌘M). A keyboard user has no left-click, and without
+  this the gadget would be mouse-only.
+- **`About Rosetta Stone`** in the application menu, carrying the version string and the icon
+  attribution.
+
+#### Changed
+
+- **The pending dot moved onto the switch.** It now sits at the pill's top-trailing corner
+  (`PendingPillSwitch`) rather than beside the row title, where it read as a bullet in the label.
+  The dot answers *"will this switch change?"*, so it belongs on the switch. The Rosetta 2
+  **Install** button has no switch, so its dot stays inline — the same orange token, anchored
+  where it has to be.
+- **The pill switch animates.** 0.2 s ease-in-out, with the knob genuinely **sliding** between
+  the two ends rather than teleporting. A switch that only changes colour reads as a status
+  light, not as something you pressed.
+- **Rows reordered** (owner-specified): Gatekeeper → Auto Boot → Hidden Files → Run at Startup →
+  Rosetta 2 → Quick Tools. Gatekeeper and Hidden Files lead because they are the two people reach
+  for constantly; **Run at Startup moved to fourth** so the switch that governs the app's entire
+  posture is not the first thing under the user's cursor. A `Divider` now separates the features
+  from the one-shot maintenance tools.
+- **The buttons are **OK** and **CANCEL**, in English.** The previous Thai labels
+  ("ตกลง" / "ยกเลิก") were replaced wholesale rather than dual-labelled: every row title,
+  description, dialog and menu item was already English, so a Thai pair on an otherwise English
+  panel read as an inconsistency. The queue count moved off the button face into its own chip, so
+  the buttons stop changing width as rows are staged.
+- **The status item's left-click opens the mini panel** instead of toggling Gatekeeper directly.
+  A single click that raises a password prompt and lowers a *security* setting is not something to
+  discover by accident, and there was nowhere in the gadget to see or reverse it. Gatekeeper is
+  still one click away — it is the mini panel's first row, and the direct toggle remains in the
+  URL scheme and the status-item tooltip text.
+- **OK empties the queue, always.** This reverses the Phase 9 behaviour where a failed row kept
+  its dot so that pressing OK again was a retry. The reason: a permanently half-staged panel looks
+  identical to "I have work queued", and the most confusing thing this panel can do is be
+  ambiguous about what pressing OK will do. Failures are reported in the per-item dialog instead,
+  so nothing is lost and a dot can only ever mean "waiting". **The one exception** is a
+  dismissed Authorization dialog — "not now", not a result — which keeps the queue so OK can
+  simply be pressed again. **CANCEL** clears it and calls `loadState()`, so "discard" means *reset
+  to what the system reports*.
+- **`MiniAppView` keeps its own deferred queue** rather than sharing `ContentView`'s. Sharing
+  would mean hoisting the queue to a shared observable, and then the two panels could clear each
+  other's staged changes. Both commit through the same `applyBatch`, so one password dialog per
+  commit holds in both.
+- **Gatekeeper's macOS 15+ follow-up waits one second**
+  (`MenuBarController.settingsFollowUpDelay`). `spctl --master-disable` returns before the user
+  has seen anything, so launching System Settings in that gap produced a password sheet closing
+  and then an unrelated app appearing, with no explanation. The outcome toast is raised
+  immediately; only System Settings waits.
+
+#### Fixed
+
+- **Show Hidden Files no longer restarts Finder.** It ran `defaults write … ; killall Finder`,
+  which terminated the process every Finder window lives in: the Dock and desktop blinked out and
+  back, every window lost its scroll position, selected files and open tabs, and anything
+  mid-download restarted — a large, visible side effect for a boolean preference.
+  `SystemCommands.setHiddenFilesShown(_:)` now writes the same preference and then runs
+  `tell application "Finder" to update every window`, so the change is visible immediately and
+  nothing is destroyed. Because `batchPostStep` existed *only* to hold `killall Finder`, nothing
+  sets it any more; the mechanism is retained because it is the only place in the batch runner
+  that understands "this step belongs to the batch, not the row".
+  **One behavioural note:** controlling Finder is a TCC-protected operation, so the first use may
+  prompt for Automation permission. Declining it does not break the toggle — the preference is
+  still written and a later Finder honours it — so a refusal is reported as success-with-a-note
+  and traced, never as a failure, because the setting really was applied.
+- **The batch failure dialog no longer claims failed rows are still queued.** It says the switch
+  has been reset to what the system reports and to re-stage what you want to retry.
+
+#### Documentation
+
+- `docs/FEATURES.md` — new row order, a keyboard-shortcut table, the "OK empties the queue"
+  contract (§10.7), and a full rewrite of the Hidden Files section explaining the AppleScript
+  path and the Automation permission.
+- `docs/USER-GUIDE.md` — the mini panel documented as its own section, the reordered panel table,
+  the status dot, the relocated pending dot, and the ⌘Q / ⌘W / ⌘M shortcuts.
+- `docs/ARCHITECTURE.md` — the mini panel and the style registry added to the component map, a
+  section on why the mini panel duplicates the deferred queue, and the actual-vs-pending table
+  updated for Phase 11 semantics.
+- `scripts/update_docs_phase11.py` — the tool that performed the label migration, kept so the
+  change is reviewable rather than a mystery in the diff. It fails loudly if any Thai
+  master-button label survives.
+
 ### Phase 10 — icon pipeline made fully automated
 
 **The icon set is now complete and regenerable on macOS and Windows alike.** Phase 9 committed the

@@ -26,7 +26,7 @@ Notation used throughout this document:
 | 8 | Clear System Cache | Button | **Yes** (admin) | ✅ | ✅ Available | ✅ Available |
 
 **Queued?** describes the **panel** only: a ✅ row is staged and committed by the master
-**✅ ตกลง** button. The menu-bar controls and the `rosettastone://` URL scheme bypass the queue
+**OK** button. The menu-bar controls and the `rosettastone://` URL scheme bypass the queue
 and run immediately — see §10.5.
 
 ### Privilege matrix
@@ -46,7 +46,7 @@ and run immediately — see §10.5.
 
 ## 1. Run at Startup
 
-> **Queue:** ✅ Yes — staged in the panel and committed by **✅ ตกลง**. Batched as inline work
+> **Queue:** ✅ Yes — staged in the panel and committed by **OK**. Batched as inline work
 > (a `FileManager` write, not a shell command), so it never prompts for a password.
 
 ### Purpose
@@ -238,9 +238,9 @@ spctl --status
 
 ## 3. Hidden Files
 
-> **Queue:** ✅ Yes in the panel. ❌ No (immediate) for the menu-bar item and the
-> `rosettastone://toggle-hidden-files` URL action.
-> `killall Finder` runs **once per batch**, after the write succeeded — not once per row.
+> **Queue:** ✅ Yes in the panel and in the mini panel. ❌ No (immediate) for the
+> `rosettastone://toggle-hidden-files` URL action and the right-click menu item.
+> **Finder is no longer restarted** (Phase 11) — see below.
 
 ### Purpose
 Show or hide dotfiles (`.git`, `.env`, `.DS_Store`, …) in Finder. Conventionally the
@@ -255,15 +255,41 @@ Show hidden files (no elevation):
 
 ```bash
 defaults write com.apple.finder AppleShowAllFiles YES
-killall Finder
+```
+…then, in-process, an AppleScript refresh:
+
+```applescript
+tell application "Finder"
+    update every window
+end tell
 ```
 
-Hide hidden files (no elevation):
+Hide hidden files: identical, with `NO` instead of `YES`.
 
-```bash
-defaults write com.apple.finder AppleShowAllFiles NO
-killall Finder
-```
+The whole sequence is `SystemCommands.setHiddenFilesShown(_:)`, and it is the **only** write
+path — the panel, the mini panel, the menu item and the URL action all reach it through the
+shared `command(for:pending:)` table, so no route can drift.
+
+### Why Finder is no longer restarted (Phase 11)
+
+The previous implementation was `defaults write … ; killall Finder`. It worked, and it is why
+this row used to be documented as "restarts Finder" — but `killall Finder` terminates the
+process every Finder window lives in, so:
+
+- the Dock and desktop blink out and back,
+- every open window loses its scroll position, selected files and open tabs,
+- anything mid-download in a window restarts,
+- and it had to be a `batchPostStep` so a four-change queue did not blink the desktop four times.
+
+`update every window` gets the same visible result with none of that: the preference is written
+by the same unprivileged `defaults` call (so the durable truth is unchanged and
+`SystemStateReader.areHiddenFilesShown()` still reads it back), and running windows are asked to
+re-read it. Nothing is destroyed.
+
+Because `batchPostStep` existed **only** to hold `killall Finder`, nothing sets it any more. The
+mechanism is retained in `FeatureCommand` — it is the only place in the batch runner that
+understands "this step belongs to the batch, not the row", and the next feature that needs it
+should not have to re-derive the sequencing.
 
 ### State readback
 ```bash
@@ -283,10 +309,14 @@ Readable **without** elevation. This is the only feature that never prompts for 
 | Apple Silicon arm64 | ✅ | |
 
 ### Edge cases
-- `killall Finder` terminates the Finder process; the Dock and desktop briefly disappear and
-  relaunch. The app's own window is unaffected.
-- The `AppleShowAllFiles` key is a **per-user, per-Finder** preference. Multiple Finder windows
-  all update at once because the restart is global to the session.
+- **Automation permission.** Controlling Finder is a TCC-protected operation, so the *first* run
+  may prompt for permission to "control Finder". Declining it does **not** break the toggle: the
+  preference is still written and a Finder launched later honours it. The refusal is therefore
+  reported as **success with a note** and logged to `Trace`, never as a failure — because the
+  setting really was applied. This is the one behavioural difference from the old `killall`
+  version, which needed no such permission.
+- The `AppleShowAllFiles` key is a **per-user, per-Finder** preference. `update every window`
+  refreshes every open window at once, so they stay in agreement.
 - If the key has never been written, `defaults read` returns an error rather than `0`. Treat
   "key absent" as OFF, and treat a read failure as "unknown" rather than defaulting to ON.
 - The app must not perform this write on app launch as a side effect of reading state.
@@ -671,8 +701,8 @@ The two rules that follow from this:
 
 | Button | Shortcut | Enabled when | Effect |
 |--------|----------|--------------|--------|
-| **❌ ยกเลิก** | — | Queue is non-empty and nothing is in flight | Discards every pending entry. **Runs no command** and raises no confirmation — nothing was changed, so there is nothing to confirm. |
-| **✅ ตกลง** | ⌘↩ on macOS 11+; no shortcut on 10.15 | Queue is non-empty and nothing is in flight | Builds one command per pending row and commits them as a single batch. |
+| **CANCEL** | — | Queue is non-empty and nothing is in flight | Discards every pending entry. **Runs no command** and raises no confirmation — nothing was changed, so there is nothing to confirm. |
+| **OK** | ⌘↩ on macOS 11+; no shortcut on 10.15 | Queue is non-empty and nothing is in flight | Builds one command per pending row and commits them as a single batch. |
 
 Both are disabled whenever the queue is empty, which is what teaches the rule: Apply is not
 available until something is staged.
@@ -683,7 +713,7 @@ Pressing ✅ commits the queue through `SystemCommands.runBatched`:
 
 ```mermaid
 flowchart TD
-    A[User presses ✅ ตกลง] --> B[ContentView builds FeatureCommand<br/>per pending row, in fixed row order]
+    A[User presses OK] --> B[ContentView builds FeatureCommand<br/>per pending row, in fixed row order]
     B --> C[FeatureCoordinator.applyBatch<br/>takes the single-operation lock]
     C --> D{Any requiresAdmin?}
     D -- Yes --> E[Concatenate privileged commands<br/>into ONE shell script]
@@ -725,18 +755,50 @@ Guarantees the batch must uphold:
 ---
 ## Cross-cutting behaviour
 
-### Row order (fixed)
+### Row order (owner-specified, Phase 11)
+
+Reordered in Phase 11. Gatekeeper and Hidden Files lead because they are the two people
+reach for constantly; **Run at Startup moved down to fourth** so the switch that governs the
+app's entire posture is not the first thing under the user's cursor and cannot be flipped by
+accident. The constant is `FeatureID.panelRowOrder`; `ContentView.rows` names each row
+explicitly, because a generated order would need a `switch` inside the view hierarchy to
+decide which rows are toggles, which are one-shot buttons, and which are Quick Tools.
 
 | Order | Row | Control |
 |-------|-----|---------|
-| 1 | Run at Startup | Toggle |
-| 2 | Gatekeeper | Toggle |
+| 1 | Gatekeeper | Toggle |
+| 2 | Auto Boot | Toggle (greyed + 🔒 on Apple Silicon) |
 | 3 | Hidden Files | Toggle |
-| 4 | Auto Boot | Toggle (greyed + 🔒 on Apple Silicon) |
+| 4 | Run at Startup | Toggle |
 | 5 | Rosetta 2 | Install button (greyed on Intel) |
+| — | *(separator)* | |
 | 6 | Quick Tools — Spotlight | Button |
 | 6 | Quick Tools — DNS | Button |
 | 6 | Quick Tools — Cache | Button |
+
+The display order is deliberately **not** `FeatureID.allCases`. `allCases` is the URL-scheme
+table and the order a deferred batch commits in; it answers "what does the router resolve",
+not "what does the user see". Pinning one to the other would make a cosmetic change a
+behaviour change.
+
+### Keyboard shortcuts
+
+| Shortcut | Action | Where |
+|----------|--------|-------|
+| ⌘↩ | Commit the queue (**OK**) | Main panel, mini panel — macOS 11+ only |
+| ⌘⌫ | Discard the queue (**CANCEL**) | Main panel, mini panel — macOS 11+ only |
+| ⌘Q | Quit Rosetta Stone | Anywhere |
+| ⌘W | Hide the panel back to the menu bar | Anywhere |
+| ⌘M | Show the mini panel | Anywhere |
+| ⌘D | Diagnostics | Anywhere |
+| ⌘H | Hide the application | Anywhere |
+
+Both `keyboardShortcut` overloads are macOS 11+ in this SDK, so the ⌘↩ / ⌘⌫ bindings are
+applied through `ConditionalCommandReturnShortcut` / `ConditionalCommandDeleteShortcut` and
+are **deliberately absent on the 10.15 floor** rather than reaching for an API that does not
+exist there. The ⌘Q / ⌘W / ⌘M / ⌘D bindings are AppKit `NSMenuItem`s and therefore work on
+every supported version — which is exactly why the main menu is built in code rather than
+left to a nib (see `AppDelegate.installMainMenu()`).
 
 ### Toggle semantics
 | Feature | ON means |
@@ -775,10 +837,27 @@ already a single explicit command, so deferring it adds a step and buys nothing.
 | Outcome | What the user sees |
 |---------|--------------------|
 | Every row succeeded | Footer banner: **สำเร็จทั้งหมด** · N change(s) applied. No dialog. |
-| Any row failed | Footer banner with the failure count **and** a per-item dialog listing **every** row with a ✅ or ❌, so the successes are visibly confirmed too. |
-| Authorization dismissed | Nothing. The queue is kept and the pending dots remain; the user can press ✅ again. |
+| Any row failed | Footer banner with the failure count **and** a per-item dialog listing **every** row with a ✅ or ❌, so the successes are visibly confirmed too. **All pending dots clear** — see below. |
+| Authorization dismissed | Nothing. The queue is kept and the pending dots remain; the user can press **OK** again. |
 
-Failed rows stay queued, so a retry is a second press of ✅ rather than a re-staging exercise.
+### 10.7 OK empties the queue, always (Phase 11)
+
+**Owner decision.** When a batch completes — successfully or not — **every** pending dot
+clears. The switches then repaint from the system state the coordinator re-reads afterwards.
+
+This reverses the Phase 9 behaviour, where a failed row kept its dot so that pressing **OK**
+again was a retry. The reason for the change: a permanently half-staged panel looks identical
+to "I have work queued", and the single most confusing thing this panel can do is be ambiguous
+about what pressing **OK** will do. Nothing is lost — the per-item dialog names each failure
+and why, so a retry is one click per row.
+
+**The one exception** is a dismissed Authorization dialog. That is an answer of "not now"
+rather than a result: no command ran, so the queue survives and **OK** can simply be pressed
+again without re-staging.
+
+**CANCEL** clears the queue and calls `loadState()`, which re-reads every feature
+unprivileged. So "discard" means *reset to what the system actually reports*, not *reset to
+what I remember*.
 
 ---
 | Auto Boot | Auto boot is enabled |

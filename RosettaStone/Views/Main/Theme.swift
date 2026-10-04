@@ -55,6 +55,157 @@ enum Theme {
 
     static let rowSpacing: CGFloat = 34
     static let contentPadding: CGFloat = 28
+
+    // MARK: - Unified style registry (Phase 11)
+    //
+    // Every button, toggle and panel in the app resolves its lookups from here, so there is
+    // exactly one definition of "what a primary button looks like". The style *types* still
+    // live in `Components.swift`; this namespace is only the name they are reached by, which
+    // is what keeps a look change to a single edit rather than a hunt through call sites.
+    //
+    // These are computed properties, not `static let`: a stored global of a mutable-shaped
+    // type would be shared across every view that touched it, and a `ButtonStyle` carries
+    // per-use state. Returning a fresh value each read keeps them inert and shareable.
+
+    /// The panel's own background — a gradient, not a flat fill, matching the mock-up.
+    static var panelBackground: LinearGradient {
+        LinearGradient(
+            gradient: Gradient(colors: [backgroundTop, backgroundBottom]),
+            startPoint: .top,
+            endPoint: .bottom)
+    }
+
+    /// The one accent the app leads with: the commit action (OK), the Rosetta Install
+    /// button, and every affirmative control.
+    static var accentColor: Color { accentYellow }
+
+    /// The foreground that is legible **on** `accentColor`.
+    static var onAccentColor: Color { onAccentYellow }
+
+    /// Raised card fill, used by the mini panel's rows and the result dialog's list.
+    static var panelSurface: Color { Color.white.opacity(0.05) }
+
+    /// The destructive accent. Used for a critical confirm and for the "off" status dot.
+    static var destructiveColor: Color { failure }
+
+    /// **Master commit** — OK, Install, and every affirmative dialog button.
+    static var primaryButton: AccentButtonStyle { AccentButtonStyle() }
+
+    /// The master commit, in its destructive form (a critical confirmation).
+    static var destructiveButton: ConfirmButtonStyle { ConfirmButtonStyle(isDestructive: true) }
+
+    /// A neutral confirm (a non-destructive confirmation sheet's affirmative button).
+    static var confirmButton: ConfirmButtonStyle { ConfirmButtonStyle(isDestructive: false) }
+
+    /// **Master discard** — CANCEL, and the dismiss button on a sheet.
+    static var secondaryButton: SecondaryButtonStyle { SecondaryButtonStyle() }
+
+    /// The outlined Quick Tools pills.
+    static var quickToolButton: QuickToolButtonStyle { QuickToolButtonStyle() }
+
+    /// The quiet footer text link (Diagnostics).
+    static var quietLinkButton: QuietLinkButtonStyle { QuietLinkButtonStyle() }
+
+    /// The toggle's own palette and motion, so a pill cannot be drawn one colour in the
+    /// panel and another in the mini panel.
+    static var toggle: PillSwitchPalette { PillSwitchPalette() }
+}
+
+/// The ON/OFF pill's colours and animation, gathered in one value.
+///
+/// Exists so `PillSwitch` has no literals of its own: the pill is drawn from this struct in
+/// both the main panel and the mini menu-bar panel, so the two cannot drift apart visually.
+struct PillSwitchPalette {
+
+    /// Track fill when the row is ON — the green from the mock-up.
+    var trackOn: Color { Theme.accentGreen }
+
+    /// Track fill when the row is OFF.
+    var trackOff: Color { Theme.accentGrey }
+
+    /// The knob, always white: it has to read against both a green and a grey track.
+    var knob: Color { .white }
+
+    /// Duration and curve of the slide. 0.2 s ease-in-out reads as "it moved" rather than
+    /// "it blinked" — long enough to see the direction, short enough not to lag the click.
+    var animation: Animation { .easeInOut(duration: 0.2) }
+
+    /// The track colour for a state. One switch so the ON and OFF colours can never be
+    /// paired with the wrong caption.
+    func track(isOn: Bool) -> Color { isOn ? trackOn : trackOff }
+
+    /// The ON/OFF caption colour. White in **both** states, because the caption is drawn
+    /// *on* the coloured track — using the panel's grey text here would make the label
+    /// vanish into the OFF pill.
+    func caption(isOn: Bool) -> Color { .white }
+}
+
+/// A small always-visible indicator of whether Gatekeeper is currently doing its job.
+///
+/// ## Three states, never two
+///
+/// The dot takes a `Bool?`, and `nil` — "the status could not be read" — gets its own
+/// **grey**, deliberately *not* the green used for "active". A two-state indicator would have
+/// to render an unreadable status as either safe or unsafe, and both are lies: a managed Mac
+/// whose policy blocks `spctl --status` is neither protected nor known-unprotected as far as
+/// this app can tell. Grey says "ask the system yourself", which is the truth.
+///
+/// Drawn as shapes rather than SF Symbols (`Image(systemName:)` is macOS 11+) to keep the
+/// 10.15 floor, the same rule every other icon in this app follows.
+struct GatekeeperStatusDot: View {
+
+    /// `true` = bypassed, `false` = active, `nil` = unreadable.
+    let state: Bool?
+
+    /// Diameter. Larger than `PendingDot` (9 pt) because this dot is the *primary* status
+    /// signal, not a secondary annotation.
+    private let diameter: CGFloat = 11
+
+    private var color: Color {
+        switch state {
+        case .some(true):  return Theme.failure    // red — Gatekeeper is off
+        case .some(false): return Theme.success    // green — Gatekeeper is on
+        case .none:        return Theme.accentGrey // grey — unknown
+        }
+    }
+
+    /// Tooltip copy. Also the only place the dot's *meaning* is spelled out, which is what
+    /// makes it safe for the colour to be the primary channel.
+    private var label: String {
+        switch state {
+        case .some(true):  return "Gatekeeper is bypassed — this Mac will run unsigned software."
+        case .some(false): return "Gatekeeper is active."
+        case .none:        return "Gatekeeper status could not be read."
+        }
+    }
+
+    var body: some View {
+        // A ring around a filled core: the ring keeps the dot legible at 11 pt, where a
+        // plain filled circle would read as a smudge against the dark gradient.
+        ZStack {
+            Circle()
+                .stroke(color.opacity(0.45), lineWidth: 2)
+                .frame(width: diameter + 4, height: diameter + 4)
+            Circle()
+                .fill(color)
+                .frame(width: diameter, height: diameter)
+        }
+        .animation(Theme.toggle.animation, value: state)
+        .accessibilityTitle(label)
+    }
+}
+
+extension View {
+    /// Sets the AppKit tooltip and the VoiceOver label for a control in one modifier.
+    ///
+    /// Wrapped rather than used inline because SwiftUI's `.help(_:)` and
+    /// `.accessibilityLabel(_:)` are both **macOS 11+**, and this app deploys to 10.15.
+    /// `TooltipHost` already solves this for arbitrary content; this is the shorthand for the
+    /// common "leaf control that just wants a tooltip" case. The `content` generic is `Self`,
+    /// so the wrapped view keeps its own identity and nothing else about it changes.
+    func accessibilityTitle(_ text: String) -> some View {
+        TooltipHost(text: text, content: self)
+    }
 }
 
 /// A hairline separator used between rows, matching the mock-up's subtle rule.

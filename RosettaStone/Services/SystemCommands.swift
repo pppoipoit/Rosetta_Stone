@@ -324,6 +324,92 @@ enum SystemCommands {
         }
     }
 
+    /// AppleScript that makes Finder re-read its preferences **without restarting**.
+    ///
+    /// ## Why not `killall Finder`
+    ///
+    /// The original implementation was `defaults write … ; killall Finder`. That works, and
+    /// it is why this row was documented as "restarts Finder" — but it kills the process
+    /// every Finder window lives in, so the Dock and desktop blink out and back, every
+    /// window's scroll position and open-tab state is lost, and anything mid-download in a
+    /// window restarts. That is a large, visible side effect for a boolean preference.
+    ///
+    /// ## Why AppleScript instead of a Finder restart
+    ///
+    /// `NSAppleScript` is the only supported way to make a *running* Finder act on a changed
+    /// preference. `update every window` tells each window to re-read the setting, so the
+    /// change is visible immediately and nothing is destroyed.
+    ///
+    /// Two details that are load-bearing:
+    ///
+    /// 1. **`update every window` is required.** Setting `AppleShowAllFiles` alone changes
+    ///    the preference but leaves open windows showing stale content; the update is what
+    ///    makes it visibly take effect. Skipping it produces a toggle that "did nothing".
+    /// 2. **Automation permission.** Controlling Finder is a TCC-protected operation, so on
+    ///    a first run macOS may prompt for permission to "control Finder". The prompt is
+    ///    honest about what is being asked and declining it does not break the toggle — the
+    ///    preference is still written, and a Finder launched later will honour it. A refusal
+    ///    is therefore reported as success-with-a-note rather than as a failure, because the
+    ///    setting really was applied.
+    ///
+    /// Returned as an optional error rather than thrown: the caller needs to distinguish
+    /// "AppleScript was refused" from "the process could not start", and both are outcomes
+    /// worth logging rather than crashing on.
+    private static func refreshFinderWindows() -> String? {
+        let source = """
+        tell application "Finder"
+            update every window
+        end tell
+        """
+        guard let script = NSAppleScript(source: source) else {
+            return "Finder's AppleScript could not be compiled."
+        }
+        var errorInfo: NSDictionary?
+        // `executeAndReturnError` rather than `executeAndReturnResult`: we care whether the
+        // tell block succeeded, not what it returned.
+        _ = script.executeAndReturnError(&errorInfo)
+        if let errorInfo = errorInfo, let message = errorInfo[NSAppleScript.errorMessage] as? String {
+            return message
+        }
+        return nil
+    }
+
+    /// Shows or hides dotfiles in Finder, **without restarting Finder**.
+    ///
+    /// This is feature 3's single write path, called identically from the panel's deferred
+    /// queue, the menu-bar item and the URL scheme — there is exactly one implementation, so
+    /// the three routes cannot drift (the same reason `FeatureCoordinator.command(for:pending:)`
+    /// is the one command table).
+    ///
+    /// The preference write is still `defaults`, deliberately: it is unprivileged, it is the
+    /// same key `SystemStateReader.areHiddenFilesShown()` reads back, and it keeps the
+    /// durable truth independent of Finder being scriptable. The AppleScript is layered on
+    /// afterwards purely to make running windows notice.
+    ///
+    /// - Parameter shown: `true` reveals dotfiles, matching the row's ON == shown semantics.
+    /// - Returns: success when the preference was written, even if Finder could not be
+    ///   refreshed — see point 2 above. A failure is returned only when the *write* failed.
+    static func setHiddenFilesShown(_ shown: Bool) -> CommandOutcome {
+        let write = runShell("\(finderDefaultsTool) write com.apple.finder AppleShowAllFiles "
+                             + (shown ? "YES" : "NO"))
+        guard write.isSuccess else { return write }
+
+        if let problem = refreshFinderWindows() {
+            // The preference is written and will apply to the next Finder window, so this is
+            // a success with a caveat rather than a failure. Logged so Diagnostics can show it.
+            Trace.log("hidden files: preference written, Finder refresh declined (\(problem))")
+            return .success(output: "Finder windows were not refreshed (\(problem)).")
+        }
+        return .success(output: "")
+    }
+
+    /// Path to `defaults`, the one place the Hidden Files write path names it.
+    ///
+    /// The immediate routes and the deferred-queue route both build their command through
+    /// `FeatureCoordinator.command(for:pending:)`, so this constant exists to keep a second
+    /// spelling of the path from creeping into either of them.
+    private static let finderDefaultsTool = "/usr/bin/defaults"
+
     // MARK: - Quoting
 
     /// Wraps `value` in single quotes for `/bin/sh`, escaping embedded quotes as `'\''`.

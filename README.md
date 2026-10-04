@@ -37,41 +37,65 @@ Design constraints that shape everything:
 
 | # | Feature | Control | Command | Admin? | Queued? | Availability |
 |---|---------|---------|---------|--------|---------|--------------|
-| 1 | Run at Startup | Toggle (mode switch) | `create` / `remove` `~/Library/LaunchAgents/com.rosettastone.helper.plist` | **Yes** (admin) | ✅ | All |
-| 2 | Gatekeeper | Toggle | `spctl --master-disable` / `spctl --master-enable` (macOS 15+: confirm “Anywhere” in System Settings) | **Yes** (admin) | ✅ | All |
-| 3 | Hidden Files | Toggle (ON = show) | `defaults write com.apple.finder AppleShowAllFiles YES/NO` + `killall Finder` | No | ✅ | All |
-| 4 | Auto Boot | Toggle | `nvram AutoBoot=%03` / `nvram AutoBoot=%00` | **Yes** (admin) | ✅ | Intel MacBook only; greyed + lock icon on Apple Silicon *and* on desktops, with the reason shown inline |
+| 1 | Gatekeeper | Toggle | `spctl --master-disable` / `spctl --master-enable` (macOS 15+: confirm “Anywhere” in System Settings) | **Yes** (admin) | ✅ | All |
+| 2 | Auto Boot | Toggle | `nvram AutoBoot=%03` / `nvram AutoBoot=%00` | **Yes** (admin) | ✅ | Intel MacBook only; greyed + lock icon on Apple Silicon *and* on desktops, with the reason shown inline |
+| 3 | Hidden Files | Toggle (ON = show) | `defaults write com.apple.finder AppleShowAllFiles YES/NO`, then an AppleScript `update every window` — **Finder is not restarted** | No | ✅ | All |
+| 4 | Run at Startup | Toggle (mode switch) | `create` / `remove` `~/Library/LaunchAgents/com.rosettastone.helper.plist` | **Yes** (admin) | ✅ | All |
 | 5 | Rosetta 2 | Install button | `softwareupdate --install-rosetta --agree-to-license` | **Yes** (admin) | ✅ | Apple Silicon only; greyed on Intel; installed-check via `/usr/libexec/oah/libRosettaRuntime` |
 | 6 | Spotlight Rebuild | Button | `mdutil -E /` | **Yes** (admin) | ✅ | All |
 | 7 | DNS Flush | Button | `dscacheutil -flushcache` + `killall -HUP mDNSResponder` | **Yes** (admin) | ✅ | All |
 | 8 | Clear System Cache | Button | `rm -rf /Library/Caches/*` | **Yes** (admin) | ✅ | All |
 
+> The **#** column is the **panel display order** (owner-specified in Phase 11). It is deliberately
+> not `FeatureID.allCases`, which is the URL-scheme table and the order a deferred batch commits in.
+
 > Every command in the **Admin?** column marked *Yes* is executed with administrator privileges
 > via `osascript -e '... with administrator privileges'` and therefore raises a macOS
 > authentication dialog. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#5-privilege-escalation-strategy).
 
-> **Queued?** ✅ means the panel stages the change instead of running it. Pressing **✅ ตกลง**
+> **Queued?** ✅ means the panel stages the change instead of running it. Pressing **OK**
 > commits the whole queue with **one** password dialog for every privileged row (⌘↩ on macOS 11+);
-> **❌ ยกเลิก** discards it. An **orange ●** beside a row title marks it as staged but not
-> yet applied. Menu-bar clicks and `rosettastone://` URL actions bypass the queue and run
-> immediately, because they are shortcuts rather than batch configuration.
+> **CANCEL** discards it. An **orange ●** rides **on the switch** of any row that is staged but not
+> yet applied. **OK always empties the queue**, whether it succeeded or not — failures are listed
+> in a per-item dialog instead. Menu-bar clicks and `rosettastone://` URL actions bypass the queue
+> and run immediately, because they are shortcuts rather than batch configuration.
 
 ### UI layout (row order)
 
 ```
-Run at Startup      [ toggle ]
-Gatekeeper          [ toggle ]
-Hidden Files        [ toggle ]
+Gatekeeper          [ toggle ]  ● pending dot rides on the switch
 Auto Boot           [ lock ]  /  [ toggle ]     <- Intel MacBook only
+Hidden Files        [ toggle ]
+Run at Startup      [ toggle ]                 <- the mode switch, deliberately 4th
 Rosetta 2           [ Install ]                 <- Apple Silicon only
+                   -------------------------------
 Quick Tools         [ Spotlight ] [ DNS ] [ Cache ]
 ------------------ status banner ------------------
-                   [ ❌ ยกเลิก ] [ ✅ ตกลง ]  <- master buttons (⌘↩ on macOS 11+)
+                   [ CANCEL ] (3) [ OK ]  <- master buttons (⌘↩ / ⌘⌫ on macOS 11+)
 ```
 
-Dark theme throughout. The **Quick Tools** block is a 3-column grid of transient action buttons —
+Dark theme throughout. A **status dot** sits beside the title: 🟢 Gatekeeper active, 🔴 bypassed,
+⚪️ could not be read. The **Quick Tools** block is a 3-column grid of transient action buttons —
 none of them hold state. Rows carrying an **orange ●** are staged: the switch already shows
 what you asked for, but nothing has changed on the Mac yet.
+
+### Menu-bar mode
+
+With **Run at Startup** ON the app becomes a menu-bar gadget with two faces:
+
+- **Left-click** → the **mini panel**: three switches (Gatekeeper, Hidden Files, Run at Startup),
+  **OK** / **CANCEL**, and **Open Main App**. It queues exactly like the main panel.
+- **Right-click** → the full menu (Open Main Window, Mini Panel…, quick actions, Diagnostics…,
+  Quit).
+
+| Shortcut | Action |
+|----------|--------|
+| ⌘↩ | Commit the queue (macOS 11+) |
+| ⌘⌫ | Discard the queue (macOS 11+) |
+| ⌘Q | Quit |
+| ⌘W | Hide the panel back to the menu bar |
+| ⌘M | Show the mini panel |
+| ⌘D | Diagnostics |
 
 Full behavioural detail, per-feature command strings, and edge cases: **[docs/FEATURES.md](docs/FEATURES.md)**.
 

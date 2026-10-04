@@ -14,8 +14,17 @@ enum FeatureID: String, CaseIterable {
     case dnsFlush           = "flush-dns"
     case clearSystemCache   = "clear-cache"
 
-    /// Row label as shown in the panel.
-    var title: String {
+    /// **Display name** for the row — the human label of the toggle or button.
+    ///
+    /// The single source of truth for the name a user reads. Every surface that has to
+    /// name a feature reads it from here — the main panel, the mini menu-bar panel, the
+    /// batch results dialog, the diagnostics report and the menu items — so a row cannot
+    /// be called one thing in the panel and another in a dialog.
+    ///
+    /// `title` is kept as a deprecated-style alias because it reads better at the call
+    /// sites that are naming a *row* rather than a *feature*; both resolve to this value,
+    /// so the two tables cannot drift.
+    var displayName: String {
         switch self {
         case .runAtStartup:     return "Run at Startup"
         case .gatekeeper:       return "Gatekeeper"
@@ -27,6 +36,9 @@ enum FeatureID: String, CaseIterable {
         case .clearSystemCache: return "Clear System Cache"
         }
     }
+
+    /// Row label as shown in the panel. Alias of `displayName`.
+    var title: String { displayName }
 }
 
 /// Whether a row is interactive on this Mac, and why not if it is not.
@@ -69,11 +81,16 @@ extension FeatureID {
         + "and need to be restarted, and there is no way to undo this."
 
     /// One-line explanation shown under the row title.
-    var detail: String {
+    ///
+    /// **Every toggle carries one.** A switch with no explanation makes the user guess what
+    /// ON actually does — and on the two *inverted* rows (Gatekeeper, Hidden Files) guessing
+    /// wrong means lowering a security setting. `description` is the canonical name; `detail`
+    /// is a retained alias so existing call sites keep working against the same table.
+    var description: String {
         switch self {
         case .runAtStartup:     return "ON switches to menu-bar gadget mode and starts it at every login."
         case .gatekeeper:       return "ON means Gatekeeper is bypassed (macOS 15+ confirms in System Settings)."
-        case .hiddenFiles:      return "ON means dotfiles are visible in Finder. Restarts Finder."
+        case .hiddenFiles:      return "ON means dotfiles are visible in Finder. Updates open windows."
         case .autoBoot:         return "Power on automatically when power is restored."
         case .rosetta2:         return "Install Apple’s translation layer for Intel-only software."
         case .spotlightRebuild: return "Erase and rebuild the Spotlight index for /."
@@ -81,6 +98,29 @@ extension FeatureID {
         case .clearSystemCache: return "Delete the contents of /Library/Caches. Destructive."
         }
     }
+
+    /// Retained alias of `description`.
+    var detail: String { description }
+
+    /// The order the **panel** draws its rows in (owner-specified, Phase 11).
+    ///
+    /// Deliberately separate from `FeatureID.allCases`, which is the *URL-scheme* table and
+    /// the order a deferred batch is committed in. Those two orders answer different
+    /// questions — "what the user sees" versus "what the router resolves" — and pinning the
+    /// display order to the routing order would make a cosmetic change a behaviour change.
+    ///
+    /// The order itself: Gatekeeper and Hidden Files first (the two people reach for
+    /// constantly), then the two posture rows, then Rosetta, then Quick Tools.
+    static let panelRowOrder: [FeatureID] = [
+        .gatekeeper,        // 1 — most-used security switch
+        .autoBoot,          // 2 — power behaviour
+        .hiddenFiles,       // 3 — Finder visibility
+        .runAtStartup,      // 4 — the posture switch itself, deliberately below the rows it changes
+        .rosetta2,          // 5 — one-shot install
+        .spotlightRebuild,  // 6 — Quick Tools
+        .dnsFlush,
+        .clearSystemCache
+    ]
 
     /// True when the *write* path goes through `osascript … with administrator privileges`.
     /// State **reads are unprivileged in every case**, so opening the window costs nothing.

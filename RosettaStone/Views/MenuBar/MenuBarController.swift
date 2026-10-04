@@ -15,26 +15,39 @@ import Combine
 /// - **Mode A (Run at Startup OFF, the default):** there is **no status item at all**.
 ///   The controller exists only to own the window, and `AppDelegate` keeps the process
 ///   `.regular` so the Dock icon is visible.
-/// - **Mode B (Run at Startup ON):** the status item is the app. **Left-click toggles
-///   Gatekeeper directly** — no dropdown, no window, straight to the macOS password
-///   prompt, with a **toast** (`StatusItemToast`) reporting the outcome. **Right-click**
-///   (or Control-click) opens the full menu: Open Main Window, Toggle Hidden Files, Flush
-///   DNS, Rebuild Spotlight, Clear System Cache… (confirmed), Diagnostics… (⌘D), Quit.
+/// - **Mode B (Run at Startup ON):** the status item is the app, and it has **two faces**
+///   (Phase 11):
+///   - **Left-click → the mini panel** (`MiniAppView`): a small, self-contained window with
+///     three switches (Gatekeeper, Hidden Files, Run at Startup), an OK / CANCEL bar and a
+///     route to the full app. It uses the **same deferred queue** as the main panel, so
+///     nothing runs until OK and a batch still costs one password prompt.
+///   - **Right-click** (or Control-click) → the full menu: Open Main Window, Toggle Hidden
+///     Files, Flush DNS, Rebuild Spotlight, Clear System Cache… (confirmed), Diagnostics…
+///     (⌘D), Quit Rosetta Stone (⌘Q).
+///
+/// Before Phase 11 a left-click toggled Gatekeeper directly. That was a good idea for a
+/// panel that had no other face, but it became the wrong one once the gadget grew a real
+/// UI: a single click that raises a password prompt and changes a **security** setting is not
+/// something to discover by accident, and there was nowhere in the gadget to see or reverse
+/// what it had just done. The direct toggle survives as the mini panel's Gatekeeper row.
 ///
 /// `setGadgetMode(_:)` installs or removes the status item live, which is what makes the
 /// Run at Startup toggle a posture switch rather than a next-login-only setting.
 ///
 /// ## Window ownership
 ///
-/// The panel is an `NSWindow` created and retained here rather than by SwiftUI, which
-/// gives deterministic show/hide behaviour and lets the app own its only window:
-/// - `NSWindow` + `NSHostingView(ContentView)`,
-/// - `.titled, .closable, .fullSizeContentView` with a transparent titlebar so the dark
-///   panel bleeds to the edges like the mock-up,
-/// - the window is *not* released when closed, so reopening is instant and the
-///   coordinator's `@Published` state survives,
-/// - it is built in **both** modes: mode B needs it for "Open Main Window" and for the
-///   destructive-action sheet.
+/// This class owns **two** windows: the main panel and the mini panel.
+/// - The main panel is an `NSWindow` created and retained here rather than by SwiftUI, which
+///   gives deterministic show/hide behaviour and lets the app own its only full window:
+///   `NSWindow` + `NSHostingView(ContentView)`, `.titled, .closable, .fullSizeContentView`
+///   with a transparent titlebar so the dark panel bleeds to the edges like the mock-up, and
+///   `isReleasedWhenClosed = false` so reopening is instant and the coordinator's
+///   `@Published` state survives.
+/// - The mini panel is an `NSPanel`, built lazily on the first left-click and retained
+///   thereafter for the same reason. It is built **only in mode B** — it is meaningless
+///   without a status item to click, and building it in mode A would be dead weight.
+/// - Both are built in mode B: the full panel is still needed for "Open Main Window", for
+///   `rosettastone://open-app`, and for the destructive-action sheet.
 ///
 /// The dropdown menu and its actions live in the extension at the bottom of this file.
 final class MenuBarController: NSObject {
@@ -49,6 +62,10 @@ final class MenuBarController: NSObject {
     /// The panel window. Built in both modes and retained even while hidden.
     private var window: NSWindow?
 
+    /// The mini menu-bar panel. Built lazily on the first left-click and retained
+    /// thereafter, so the second click is instant and the queue survives being closed.
+    private var miniPanel: NSPanel?
+
     /// `true` while the process is in mode B — the menu-bar gadget.
     ///
     /// Flips live: `AppDelegate` calls `setGadgetMode(_:)` the moment the Run at Startup
@@ -61,11 +78,16 @@ final class MenuBarController: NSObject {
     /// Which image source the status item actually resolved to. Surfaced by Diagnostics.
     private(set) var statusImageSource = "none"
 
-    /// `true` while the direct Gatekeeper toggle's outcome still has to be toasted.
+    /// `true` while a Gatekeeper outcome still has to be toasted.
     ///
-    /// Armed on the click, then cleared by whichever outcome signal fires first: a
-    /// failure / "still running" message, or the state re-read that follows every
-    /// completed operation.
+    /// Armed when the user *stages* Gatekeeper — in the mini panel or the main panel, through
+    /// the deferred queue — then cleared by whichever outcome signal fires first: a failure /
+    /// "still running" message, or the state re-read that follows a completed operation.
+    ///
+    /// Since Phase 11 the left-click no longer toggles Gatekeeper directly, so this is no
+    /// longer armed by a status-item click. It is armed from the mini panel's OK instead,
+    /// which is the point: the gadget now toasts the outcome of a **queued** change, so the
+    /// user gets feedback without the panel having to stay on screen.
     private var gatekeeperToastArmed = false
 
     /// Cancellations of the subscriptions tying menu enablement to feature state.
@@ -292,11 +314,12 @@ final class MenuBarController: NSObject {
         return item.isVisible ? "yes — AppKit reports the item as visible" : "NO — AppKit reports it as hidden"
     }
 
-    /// **Left-click toggles Gatekeeper directly.** **Right-click** (or Control-click)
-    /// pops up the full dropdown.
+    /// **Left-click opens the mini panel.** **Right-click** (or Control-click) pops up the
+    /// full dropdown.
     ///
-    /// This is the mode B contract: the gadget's primary job is one click away, with no
-    /// dropdown and no window in between. The full menu stays on the secondary click.
+    /// This is the mode B contract after Phase 11: the gadget's primary face is a real
+    /// panel with real switches, and the dropdown is the secondary one. See the type
+    /// documentation for why the direct Gatekeeper toggle moved off the left-click.
     @objc private func statusItemClicked(_ sender: NSStatusBarButton) {
         let event = NSApp.currentEvent
         let isSecondaryClick = event?.type == .rightMouseUp
@@ -305,21 +328,204 @@ final class MenuBarController: NSObject {
         if isSecondaryClick {
             presentMenu(from: sender)
         } else {
-            toggleGatekeeperFromStatusItem()
+            toggleMiniPanel(near: sender)
         }
     }
 
-    /// The gadget's primary action: flip Gatekeeper.
+    /// Shows the mini panel, or hides it if it is already up.
     ///
-    /// No dropdown, no panel, no window — only the macOS password prompt and a toast that
-    /// reports what actually happened. Everything the user needs to know is in the toast and
-    /// the status-item tooltip.
-    private func toggleGatekeeperFromStatusItem() {
+    /// Toggling rather than only showing is what makes the click idempotent: clicking the
+    /// status item again should dismiss, the same as clicking any other panel's owner.
+    private func toggleMiniPanel(near button: NSStatusBarButton) {
         assert(Thread.isMainThread, "status-item clicks arrive on the main thread")
-        Trace.log("status item left-click → toggling Gatekeeper")
-        StatusItemToast.show("Gatekeeper: waiting for authorization…", near: statusItem?.button)
+
+        if miniPanel?.isVisible == true {
+            miniPanel?.orderOut(nil)
+            Trace.log("mini panel hidden")
+            return
+        }
+        showMiniPanel(near: button)
+    }
+
+    /// Hides the mini panel if it is on screen.
+    ///
+    /// Used when the app is about to put something else in front — a modal alert, or the
+    /// main panel — so two panels are never stacked.
+    func dismissMiniPanel() {
+        guard miniPanel?.isVisible == true else { return }
+        miniPanel?.orderOut(nil)
+        Trace.log("mini panel dismissed programmatically")
+    }
+
+    /// Presents the mini panel from the main menu bar (Window → Mini Panel, ⌘M).
+    ///
+    /// A no-op in mode A: there is no status item to anchor to, and the mini panel is a
+    /// gadget surface. Silently doing nothing would look like a broken menu item, so the
+    /// refusal is traced.
+    func presentMiniPanelFromMenu() {
+        guard let button = statusItem?.button else {
+            Trace.log("presentMiniPanelFromMenu ignored: no status item (normal mode)")
+            return
+        }
+        showMiniPanel(near: button)
+    }
+
+    /// Orders both windows out, leaving the process alive. This is ⌘W.
+    ///
+    /// Both, not just the main panel: leaving the mini panel up behind a "minimized to the
+    /// menu bar" action would be self-contradictory. `orderOut(_:)` rather than `close()`
+    /// because closing would tear down the key-window state that makes ⌘W reversible.
+    func hideAllWindows() {
+        assert(Thread.isMainThread, "window visibility must change on the main thread")
+        miniPanel?.orderOut(nil)
+        window?.orderOut(nil)
+    }
+
+    /// Arms the outcome toast for a Gatekeeper change the user is about to commit.
+    ///
+    /// Called by the mini panel's OK when the queue holds a Gatekeeper toggle. The gadget's
+    /// whole feedback model is the toast — the panel may well be dismissed by the time the
+    /// password prompt is answered, so without this the user would learn the outcome only by
+    /// reopening the app.
+    ///
+    /// Maintained as an explicit arm flag rather than "toast everything": a toast per
+    /// operation would be noise, and this is the one change whose result is both
+    /// security-relevant and invisible in any window the user is looking at.
+    func armGatekeeperToast() {
+        assert(Thread.isMainThread, "toast arming must happen on the main thread")
         gatekeeperToastArmed = true
-        coordinator.toggleGatekeeper()
+    }
+
+    /// The gatekeeper toast wording, so the mini panel, the main panel and the System
+    /// Settings follow-up cannot describe the same outcome three different ways.
+    ///
+    /// `nil` state means `spctl --status` could not be read, which is reported as unknown
+    /// rather than guessed at — the same rule the status dot follows.
+    static func gatekeeperOutcomeText(bypassed: Bool?) -> String {
+        switch bypassed {
+        case .some(true):  return "Gatekeeper: disabled"
+        case .some(false): return "Gatekeeper: enabled"
+        case .none:        return "Gatekeeper: state could not be read"
+        }
+    }
+    /// Builds (once) and shows the mini panel, positioned under the status item.
+    ///
+    /// ## Why an `NSPanel` and not a popover
+    ///
+    /// `NSPopover` would be the idiomatic choice, but it is a *transient*: it closes the
+    /// moment it loses key focus and AppKit will not let it own a window the user parks.
+    /// A panel gives the mini app a real, durable surface — which is what "mini app mode"
+    /// means here. The cost is that AppKit does *not* dismiss it automatically, so the
+    /// `didResignKey` observer below does it by hand.
+    ///
+    /// ## Positioning
+    ///
+    /// Anchored to the status item's own window converted to **screen** coordinates and then
+    /// clamped to the visible frame. The conversion is required, not decorative: the status
+    /// item's window is not the screen, and the clamp is what stops a status item near the
+    /// right edge from putting half the panel off-screen.
+    private func showMiniPanel(near button: NSStatusBarButton) {
+        assert(Thread.isMainThread, "the mini panel must be presented on the main thread")
+
+        let panel = miniPanel ?? makeMiniPanel()
+        miniPanel = panel
+
+        let size = panel.frame.size
+        var origin: NSPoint
+
+        if let hostWindow = button.window {
+            // Two conversions, not one: `button.bounds` is in the *button view's* space, so
+            // it must first be lifted into the window's space (passing `nil` as the base
+            // view means "the window") and only then into screen coordinates. Converting the
+            // button's bounds directly would be correct only while the button exactly fills
+            // the status-item window, which is an assumption, not a guarantee.
+            let inWindow = button.convert(button.bounds, to: nil)
+            let host = hostWindow.convertToScreen(inWindow)
+            origin = NSPoint(x: host.midX - size.width / 2,
+                             y: host.minY - size.height - 4)
+        } else if let visible = NSScreen.main?.visibleFrame {
+            // The status item's window is gone — rare, but it happens on some display
+            // arrangements. Fall back to the top-right corner rather than the origin.
+            origin = NSPoint(x: visible.maxX - size.width - 12,
+                             y: visible.maxY - size.height - 12)
+        } else {
+            origin = NSPoint(x: 16, y: 16)
+        }
+
+        if let visible = button.window?.screen?.visibleFrame ?? NSScreen.main?.visibleFrame {
+            let margin: CGFloat = 8
+            origin.x = min(max(origin.x, visible.minX + margin),
+                           visible.maxX - size.width - margin)
+            origin.y = min(origin.y, visible.maxY - size.height - margin)
+        }
+
+        panel.setFrameOrigin(origin)
+        panel.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+        Trace.log("mini panel shown")
+    }
+
+    /// Builds the mini panel. Called at most once; the result is retained.
+    private func makeMiniPanel() -> NSPanel {
+        let panel = NSPanel(
+            contentRect: NSRect(x: 0, y: 0,
+                                width: MiniAppView.panelWidth,
+                                height: MiniAppView.panelHeight),
+            // `.fullSizeContentView` is set at construction rather than inserted afterwards:
+            // AppKit derives a window's frame behaviour and shadow from the style mask it was
+            // created with, and mutating the mask later leaves the two out of step.
+            styleMask: [.titled, .closable, .utilityWindow, .fullSizeContentView],
+            backing: .buffered,
+            defer: false
+        )
+
+        panel.title = "Rosetta Stone"
+        // A title bar on a 300 pt panel is chrome the user does not need. The panel draws
+        // its own header with its own close button, and `.fullSizeContentView` lets the dark
+        // background reach the top edge so it reads as part of this app rather than as a
+        // second app that popped up.
+        panel.titleVisibility = .hidden
+        panel.titlebarAppearsTransparent = true
+        panel.isMovableByWindowBackground = true
+        // Retained across closes: rebuilding the hosting view on every click would reset the
+        // mini panel's pending queue and re-read the hardware profile.
+        panel.isReleasedWhenClosed = false
+        panel.hidesOnDeactivate = false
+        panel.isExcludedFromWindowsMenu = true
+        panel.appearance = NSAppearance(named: .darkAqua)
+        panel.becomesKeyOnlyIfNeeded = false
+        panel.minSize = NSSize(width: MiniAppView.panelWidth,
+                               height: MiniAppView.panelHeight)
+
+        panel.contentView = NSHostingView(rootView: MiniAppView(
+            coordinator: coordinator,
+            onDismiss: { [weak self] in
+                self?.miniPanel?.orderOut(nil)
+            },
+            onOpenMainApp: { [weak self] in
+                guard let self = self else { return }
+                self.showMainWindow()
+            },
+            onArmGatekeeperToast: { [weak self] in
+                // A Gatekeeper change committed from here may complete after the panel has
+                // been dismissed, so the outcome has to reach the toast.
+                self?.armGatekeeperToast()
+            }))
+
+        // AppKit does not auto-dismiss a panel on focus loss the way it does a popover, and a
+        // panel that lingers behind another window looks stuck. Closing on resign-key is what
+        // makes it behave like the popover users expect.
+        NotificationCenter.default.addObserver(
+            forName: NSWindow.didResignKeyNotification,
+            object: panel,
+            queue: .main) { [weak self, weak panel] _ in
+                guard let self = self, self.miniPanel === panel else { return }
+                panel?.orderOut(nil)
+                Trace.log("mini panel dismissed (lost key)")
+            }
+
+        Trace.log("mini panel built \(MiniAppView.panelWidth)x\(MiniAppView.panelHeight)")
+        return panel
     }
 
     /// Pops the dropdown up under the status item, anchored to its button.
@@ -364,13 +570,18 @@ final class MenuBarController: NSObject {
         window = panel
     }
 
-    /// Shows the panel and focuses it.
+    /// Brings the full panel forward.
     ///
     /// Works in both modes: in mode B it is the "Open Main Window" menu item and the
     /// landing point for `rosettastone://open-app`; in mode A it is how the app comes
     /// back after the user closes the panel. It is never called automatically at launch
     /// in mode B.
     func showMainWindow() {
+        // Never leave the mini panel on top of the full one: two Rosetta Stone panels at
+        // once looks like a bug and makes the mini panel's OK ambiguous about which queue
+        // it is committing.
+        dismissMiniPanel()
+
         guard let panel = window else {
             Trace.log("showMainWindow ignored: no window")
             return
@@ -406,27 +617,30 @@ final class MenuBarController: NSObject {
 
     /// Tears the status item down. The process keeps running.
     private func removeStatusItem() {
+        // The mini panel is meaningless without a status item to toggle it, and leaving it
+        // on screen after leaving mode B would strand a panel the user cannot re-open.
+        dismissMiniPanel()
+
         guard let item = statusItem else { return }
         NSStatusBar.system.removeStatusItem(item)
         statusItem = nil
         Trace.log("status item removed")
     }
 
-    /// Keeps the tooltip truthful about the one thing a left-click does.
+    /// Keeps the tooltip truthful about what a click will do.
     ///
-    /// The direct Gatekeeper toggle has no window and no dropdown around it, so the
-    /// tooltip is the only surface that can confirm what the glyph will do before the
-    /// user commits to it.
+    /// The tooltip is the only thing that can tell the user what the glyph will do before
+    /// they commit to it, and it now has to describe **two** different faces rather than one.
     private func updateStatusItemToolTip() {
         guard let button = statusItem?.button else { return }
+        let state: String
         switch coordinator.gatekeeperBypassed {
-        case .some(true):
-            button.toolTip = "Rosetta Stone — Gatekeeper is bypassed. Left-click to re-enable."
-        case .some(false):
-            button.toolTip = "Rosetta Stone — Gatekeeper is active. Left-click to bypass."
-        case .none:
-            button.toolTip = "Rosetta Stone — Gatekeeper state unknown. Left-click to toggle."
+        case .some(true):  state = "Gatekeeper is bypassed."
+        case .some(false): state = "Gatekeeper is active."
+        case .none:        state = "Gatekeeper state is unknown."
         }
+        button.toolTip = "Rosetta Stone — \(state) "
+            + "Left-click for the mini panel, right-click for the full menu."
     }
 
     /// The macOS 15+ second step of disabling Gatekeeper.
@@ -435,24 +649,53 @@ final class MenuBarController: NSObject {
     /// macOS 15 / 26 / 27: the CLI alone no longer flips the user-visible switch, so
     /// System Settings is opened and the user is told exactly what to choose. The
     /// instruction copy is Thai by owner decision (`GatekeeperPolicy.confirmationMessage`).
+    ///
+    /// ## Why the one-second delay (Phase 11)
+    ///
+    /// Owner requirement. `spctl --master-disable` returns *before* the user has seen
+    /// anything — no notification, no window change. Launching System Settings in that gap
+    /// produces the worst possible sequence: a password sheet closes, the app vanishes, and
+    /// a different, scarier app is suddenly in front with no explanation of the connection.
+    /// One second is long enough for the outcome toast to be read and the windows to settle,
+    /// and short enough that the follow-up does not feel like an unrelated action.
+    ///
+    /// The **toast** is raised immediately and is not delayed, so "Gatekeeper: disabled" is
+    /// visible during the gap; only System Settings waits.
     func presentGatekeeperSettingsConfirmation() {
         assert(Thread.isMainThread, "the confirmation alert must be raised on the main thread")
 
-        Trace.log("gatekeeper: macOS 15+ confirmation step — opening System Settings")
-        if let url = URL(string: GatekeeperPolicy.settingsURL) {
-            _ = NSWorkspace.shared.open(url)
-        }
+        Trace.log("gatekeeper: macOS 15+ confirmation step — scheduling System Settings")
 
-        let alert = NSAlert()
-        alert.alertStyle = .warning
-        alert.messageText = "Gatekeeper — one more step"
-        alert.informativeText = GatekeeperPolicy.confirmationMessage
-        alert.addButton(withTitle: "OK")
-        // A gadget may own no key window: activate first so the alert cannot open behind
-        // whatever the user was using.
-        NSApp.activate(ignoringOtherApps: true)
-        alert.runModal()
+        // The outcome is the news; the follow-up is the paperwork.
+        StatusItemToast.show(
+            coordinator.gatekeeperBypassed == true
+                ? "\(MenuBarController.gatekeeperOutcomeText(bypassed: true)) — one more step in System Settings."
+                : MenuBarController.gatekeeperOutcomeText(bypassed: false),
+            near: statusItem?.button)
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + MenuBarController.settingsFollowUpDelay) {
+            Trace.log("gatekeeper: opening System Settings after the delay")
+            if let url = URL(string: GatekeeperPolicy.settingsURL) {
+                _ = NSWorkspace.shared.open(url)
+            }
+
+            let alert = NSAlert()
+            alert.alertStyle = .warning
+            alert.messageText = "Gatekeeper — one more step"
+            alert.informativeText = GatekeeperPolicy.confirmationMessage
+            alert.addButton(withTitle: "OK")
+            // A gadget may own no key window: activate first so the alert cannot open behind
+            // whatever the user was using.
+            NSApp.activate(ignoringOtherApps: true)
+            alert.runModal()
+        }
     }
+
+    /// Seconds between a successful `spctl --master-disable` and System Settings opening.
+    ///
+    /// A named constant rather than a literal at the call site, so the delay is greppable
+    /// and tunable from one place.
+    static let settingsFollowUpDelay: TimeInterval = 1.0
 
     /// Brings the app forward without showing the panel — used before a modal alert so
     /// the dialog is clearly attributed to Rosetta Stone.
@@ -516,7 +759,7 @@ extension MenuBarController {
         menu.addItem(architecture)
 
         // Documents the primary click, which never opens this menu.
-        let hint = NSMenuItem(title: "Left-click toggles Gatekeeper",
+        let hint = NSMenuItem(title: "Left-click opens the mini panel",
                               action: nil,
                               keyEquivalent: "")
         hint.isEnabled = false
@@ -529,6 +772,15 @@ extension MenuBarController {
                               keyEquivalent: "")
         open.target = self
         menu.addItem(open)
+
+        // The mini panel is normally a left-click, but a keyboard user has no left-click.
+        // Without this item the gadget would be unreachable without a mouse, which is
+        // exactly the accessibility gap a menu-bar app must not have.
+        let mini = NSMenuItem(title: "Mini Panel…",
+                              action: #selector(openMiniPanel),
+                              keyEquivalent: "m")
+        mini.target = self
+        menu.addItem(mini)
 
         let hiddenFiles = NSMenuItem(title: "Toggle Hidden Files",
                                      action: #selector(toggleHiddenFiles),
@@ -581,6 +833,22 @@ extension MenuBarController {
 
     @objc private func openPanel() {
         showMainWindow()
+    }
+
+    /// Opens the mini panel from the dropdown (⌘M).
+    ///
+    /// Anchored to the status item when there is one, so the menu route and the left-click
+    /// route land in the same place — otherwise "Mini Panel…" would open a floating window
+    /// at an arbitrary position and the two routes would feel like different features.
+    @objc private func openMiniPanel() {
+        guard let button = statusItem?.button else {
+            // Mode A has no status item. The mini panel is a gadget surface, so there is
+            // nothing to anchor to and nothing to show — say so rather than opening an
+            // unplaceable window.
+            Trace.log("openMiniPanel ignored: no status item (normal mode)")
+            return
+        }
+        toggleMiniPanel(near: button)
     }
 
     @objc private func toggleHiddenFiles() {
@@ -643,7 +911,7 @@ extension MenuBarController {
             }
             .store(in: &cancellables)
 
-        // Outcome feedback for the direct toggle, split by who has the last word:
+        // Outcome feedback for a Gatekeeper change, split by who has the last word:
         //
         //  • a failure or a "still running" refusal is final — toast it immediately;
         //  • a dismissed password prompt publishes `nil`, so stand down silently;
@@ -673,13 +941,11 @@ extension MenuBarController {
             .sink { [weak self] bypassed in
                 guard let self = self, self.gatekeeperToastArmed else { return }
                 self.gatekeeperToastArmed = false
-                let text: String
-                switch bypassed {
-                case .some(true):  text = "Gatekeeper is bypassed."
-                case .some(false): text = "Gatekeeper is active."
-                case .none:        text = "Gatekeeper state could not be read."
-                }
-                StatusItemToast.show(text, near: self.statusItem?.button)
+                // One wording table (`gatekeeperOutcomeText`), so the toast, the status dot
+                // and the System Settings follow-up cannot describe one outcome three ways.
+                StatusItemToast.show(
+                    MenuBarController.gatekeeperOutcomeText(bypassed: bypassed),
+                    near: self.statusItem?.button)
             }
             .store(in: &cancellables)
 

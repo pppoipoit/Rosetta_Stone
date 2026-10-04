@@ -15,9 +15,14 @@ extension FeatureCoordinator {
     /// Internal rather than `private` because `FeatureCoordinator.command(for:pending:)` — the
     /// deferred-queue builder — needs the same constants. One table of paths means the queued
     /// route and the immediate routes cannot drift to different binaries.
+    ///
+    /// `defaults` is **deliberately absent**. The Hidden Files write moved in Phase 11 into
+    /// `SystemCommands.setHiddenFilesShown(_:)`, which owns its path constant next to the
+    /// AppleScript refresh that has to run with it. A second spelling of the path here would
+    /// invite the two to drift, and a row that writes one preference domain while reading
+    /// another is exactly the bug that surfaces as "the toggle does nothing".
     enum Tool {
         static let spctl = "/usr/sbin/spctl"
-        static let defaults = "/usr/bin/defaults"
         static let killall = "/usr/bin/killall"
         static let nvram = "/usr/sbin/nvram"
         static let softwareupdate = "/usr/sbin/softwareupdate"
@@ -27,6 +32,29 @@ extension FeatureCoordinator {
     }
 
     // MARK: - 1. Run at Startup  (admin)
+
+    /// Executes one command from the table, on whichever path it declares.
+    ///
+    /// The single place that knows how a `FeatureCommand`'s work is carried out, so the
+    /// immediate routes (`runImmediately`, `setHiddenFiles`, `toggleHiddenFiles`) cannot each
+    /// grow their own slightly different interpretation of `.inline` versus `.shell`. The
+    /// batch runner does its own dispatch because it has to split by privilege first, but it
+    /// runs the same two cases.
+    ///
+    /// `requiresAdmin` is honoured here rather than at each call site: a command that says it
+    /// needs root gets `runAsAdmin`, which is what raises the Authorization dialog.
+    ///
+    /// Must be called from inside a locked operation (i.e. from `perform`'s work closure).
+    private static func run(_ command: FeatureCommand) -> CommandOutcome {
+        switch command.work {
+        case .inline(let work):
+            return work()
+        case .shell(let script):
+            return command.requiresAdmin
+                ? SystemCommands.runAsAdmin(script, timeout: command.timeout)
+                : SystemCommands.runShell(script, timeout: command.timeout)
+        }
+    }
 
     /// Runs one staged-style change immediately, through the **same** command table the
     /// deferred queue uses (`command(for:pending:)`).
@@ -46,17 +74,10 @@ extension FeatureCoordinator {
                 successMessage: successMessage,
                 work: {
                     guard let command = self.command(for: feature, pending: pending) else {
-                        return .failure(message: "\(feature.title) is not available on this Mac.",
+                        return .failure(message: "\(feature.displayName) is not available on this Mac.",
                                         exitCode: -1)
                     }
-                    switch command.work {
-                    case .inline(let work):
-                        return work()
-                    case .shell(let script):
-                        return command.requiresAdmin
-                            ? SystemCommands.runAsAdmin(script, timeout: command.timeout)
-                            : SystemCommands.runShell(script, timeout: command.timeout)
-                    }
+                    return FeatureCoordinator.run(command)
                 })
     }
 
@@ -119,25 +140,24 @@ extension FeatureCoordinator {
 
     /// The only feature that never prompts for a password.
     ///
-    /// `killall Finder` restarts Finder; the desktop and Dock blink out and back. Expected,
-    /// documented in the panel, and harmless to this app's own window.
+    /// Finder is **not** restarted (Phase 11): the write goes through
+    /// `SystemCommands.setHiddenFilesShown(_:)`, which writes the preference and then tells
+    /// running Finder windows to re-read it. Previously this row issued `killall Finder`,
+    /// which made the Dock and desktop blink and discarded every window's state for a
+    /// boolean preference.
+    ///
+    /// The immediate route still goes through the shared command table, so the menu-bar item
+    /// and a queued batch write byte-identical commands.
     func setHiddenFiles(shown: Bool) {
-        // `killall Finder` comes from the command table's `batchPostStep` so the queued and
-        // immediate routes restart Finder identically — and so a batch can run it once for
-        // the whole queue instead of once per row.
         perform(.hiddenFiles,
                 successMessage: shown
                     ? "Hidden files are now visible in Finder."
                     : "Hidden files are now hidden.",
                 work: { [weak self] in
-                    guard let command = self?.command(for: .hiddenFiles, pending: .toggle(shown)),
-                          let script = command.shell else {
+                    guard let command = self?.command(for: .hiddenFiles, pending: .toggle(shown)) else {
                         return .failure(message: "Could not build the hidden-files command.", exitCode: -1)
                     }
-                    let outcome = SystemCommands.runShell(script)
-                    guard outcome.isSuccess, let postStep = command.batchPostStep else { return outcome }
-                    _ = SystemCommands.runShell(postStep)
-                    return outcome
+                    return FeatureCoordinator.run(command)
                 })
     }
 
@@ -225,14 +245,10 @@ extension FeatureCoordinator {
                             ? "Hidden files are now visible in Finder."
                             : "Hidden files are now hidden.",
                         style: .success)
-                    guard let command = self.command(for: .hiddenFiles, pending: .toggle(target)),
-                          let script = command.shell else {
+                    guard let command = self.command(for: .hiddenFiles, pending: .toggle(target)) else {
                         return .failure(message: "Could not build the hidden-files command.", exitCode: -1)
                     }
-                    let outcome = SystemCommands.runShell(script)
-                    guard outcome.isSuccess, let postStep = command.batchPostStep else { return outcome }
-                    _ = SystemCommands.runShell(postStep)
-                    return outcome
+                    return FeatureCoordinator.run(command)
                 })
     }
 

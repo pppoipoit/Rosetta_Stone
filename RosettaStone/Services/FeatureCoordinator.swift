@@ -210,14 +210,14 @@ final class FeatureCoordinator: ObservableObject {
                 requiresAdmin: true)
 
         case (.hiddenFiles, .toggle(let shown)):
-            // `killall Finder` is deliberately **not** part of the command: it runs once for
-            // the whole batch (see `batchPostStep`), so a queue that also touches three other
-            // rows does not blink the desktop three times.
+            // **Inline**, not shell (Phase 11): the write plus the AppleScript refresh runs
+            // in-process. There is no post-step any more — `batchPostStep` existed only to
+            // hold `killall Finder`, and the AppleScript path removes the need to restart
+            // Finder at all, so a batch no longer blinks the desktop.
             return FeatureCommand(
                 feature: feature,
-                work: .shell("\(Tool.defaults) write com.apple.finder AppleShowAllFiles \(shown ? "YES" : "NO")"),
-                requiresAdmin: false,
-                batchPostStep: "\(Tool.killall) Finder")
+                work: .inline { SystemCommands.setHiddenFilesShown(shown) },
+                requiresAdmin: false)
 
         case (.autoBoot, .toggle(let enabled)):
             // Same two guards as `setAutoBoot(enabled:)`. A staged change on a locked row can
@@ -301,8 +301,10 @@ final class FeatureCoordinator: ObservableObject {
             let report = BatchReport(items: result.items)
 
             // Post-steps run once for the whole batch, and only for rows that actually
-            // succeeded. `killall Finder` after a failed hidden-files write would restart
-            // Finder for nothing and blink at a setting that never changed.
+            // succeeded. Nothing sets `batchPostStep` today — it was introduced to hold
+            // `killall Finder` (Phase 11 replaced that with an AppleScript refresh), and
+            // the mechanism is kept because the next feature needing "finish the job after
+            // the write" should not have to re-invent the sequencing.
             let succeeded = Set(result.items.filter { $0.succeeded }.map { $0.feature })
             var ranPostSteps: Set<String> = []
             for command in commands where succeeded.contains(command.feature) {

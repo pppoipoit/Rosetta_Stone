@@ -15,24 +15,103 @@ import AppKit
 /// The caption ("ON"/"OFF") also resolves the two *inverted* toggles (Gatekeeper, Hidden
 /// Files) unambiguously: the switch shows what has actually been disabled, not a vague
 /// "enabled".
+///
+/// ## Animation
+///
+/// The whole pill — track colour, caption, and the knob's position — is animated from
+/// `Theme.toggle.animation` (0.2 s ease-in-out). The knob genuinely **slides** rather than
+/// teleporting: ON puts it on the right, OFF puts it on the left. A switch that only changes
+/// colour reads as a status light, not as something you pressed, and the position is the
+/// second, redundant cue that makes the direction of the change obvious at a glance.
 struct PillSwitch: View {
 
+    /// Geometry of the pill. Public so `PendingPillSwitch` can anchor its dot to the real
+    /// track edge without restating the number — two copies of "26" would drift.
+    enum Metrics {
+        public static let width: CGFloat = 54
+        public static let height: CGFloat = 26
+        public static let knobDiameter: CGFloat = 14
+    }
+
     let isOn: Bool
+
+    /// How far the knob travels between the two ends: the track, minus the knob and the
+    /// 5 pt of padding each end carries.
+    private var knobTravel: CGFloat {
+        Metrics.width - Metrics.knobDiameter - 10
+    }
+
+    private var palette: PillSwitchPalette { Theme.toggle }
 
     var body: some View {
         HStack(spacing: 4) {
             Text(isOn ? "ON" : "OFF")
                 .font(.system(size: 10, weight: .semibold, design: .rounded))
-                .foregroundColor(isOn ? Color.white : Theme.primaryText)
+                .foregroundColor(palette.caption(isOn: isOn))
+
+            // The knob. A single element whose position is the animation, rather than an
+            // `if isOn { } else { }` pair — swapping two views cannot animate between them.
             Circle()
-                .fill(Color.white)
-                .frame(width: 14, height: 14)
+                .fill(palette.knob)
+                .frame(width: Metrics.knobDiameter, height: Metrics.knobDiameter)
                 .shadow(color: Color.black.opacity(0.25), radius: 1, y: 0.5)
+                // ON pushes the knob right; OFF leaves it at the leading edge.
+                .offset(x: isOn ? knobTravel : 0)
         }
         .padding(.leading, isOn ? 8 : 5)
         .padding(.trailing, isOn ? 5 : 8)
-        .frame(width: 54, height: 26)
-        .background(Capsule().fill(isOn ? Theme.accentGreen : Theme.accentGrey))
+        .frame(width: Metrics.width, height: Metrics.height)
+        .background(Capsule().fill(palette.track(isOn: isOn)))
+        // `value:` drives the animation from the *value* rather than a transaction flag, so
+        // the pill animates on exactly the changes that matter and nothing else re-renders
+        // it into a spurious tween.
+        .animation(palette.animation, value: isOn)
+    }
+}
+
+/// A `PillSwitch` carrying the orange **pending** dot (ADR-009, owner-specified placement).
+///
+/// ## Why the dot moved onto the switch
+///
+/// The dot used to sit beside the row title, where it was one of four things in a column of
+/// text and read as a bullet in the label. It now sits **on the toggle itself**, anchored to
+/// its top-trailing corner — which is where the eye already goes to answer "what will this
+/// row do?", and it makes the dot unambiguously about *the switch* rather than the label.
+///
+/// It is a separate type rather than a parameter on `PillSwitch` so `PillSwitch` stays a
+/// pure control with no knowledge of the deferred queue, and so the mini panel can reuse it
+/// without inheriting the main panel's concerns.
+struct PendingPillSwitch: View {
+
+    /// The value the switch *shows*: the staged value if one exists, else reality.
+    let isOn: Bool
+
+    /// `true` while this row holds an un-applied change.
+    let hasPendingChange: Bool
+
+    /// Dot diameter. Slightly larger than the pill's 8 pt in the brief — at 8 pt it reads as
+    /// a rendering artefact against the 26 pt pill rather than as a state marker.
+    private let dotSize: CGFloat = 9
+
+    var body: some View {
+        ZStack(alignment: .trailing) {
+            PillSwitch(isOn: isOn)
+
+            if hasPendingChange {
+                Circle()
+                    .fill(Theme.pending)
+                    .frame(width: dotSize, height: dotSize)
+                    .shadow(color: Theme.pending.opacity(0.6), radius: 2)
+                    // Out past the pill's top-trailing corner, so it overlaps the edge
+                    // rather than sitting inside the track where it would be mistaken for
+                    // part of the switch graphic.
+                    .offset(x: dotSize * 0.6, y: -(PillSwitch.Metrics.height / 2 - dotSize * 0.35))
+            }
+        }
+        // Leaves room for the dot so it is never clipped by the row's trailing edge.
+        .padding(.top, 4)
+        .padding(.trailing, 4)
+        .animation(Theme.toggle.animation, value: hasPendingChange)
     }
 }
 
@@ -202,9 +281,22 @@ struct PendingDot: View {
 ///
 /// Disabled while the queue is empty, so they cannot be pressed into a no-op — and so the
 /// panel teaches the rule by showing that Apply is unavailable until something is staged.
+/// The two master buttons that commit or discard the queue.
+///
+/// ## Naming
+///
+/// **OK** and **CANCEL**, in English, per owner decision (Phase 11). The previous Thai
+/// labels ("ตกลง" / "ยกเลิก") were replaced wholesale rather than dual-labelled: this
+/// app ships one language across every surface — every row title, description, dialog and
+/// menu item is already English — so a Thai pair of buttons on an otherwise English panel
+/// read as an inconsistency rather than as localisation.
+///
+/// The queue count moved **off** the button face and into a separate counter chip beside
+/// it. Carrying "(3)" in the button title meant the button's label changed width every
+/// time a row was staged, which made the pair visibly jump around under the user's cursor.
 struct ApplyBar: View {
 
-    /// Number of staged rows, shown as the count on the Apply button.
+    /// Number of staged rows, shown in the counter chip.
     let pendingCount: Int
 
     /// True while a batch is in flight. Greys out both buttons.
@@ -217,30 +309,43 @@ struct ApplyBar: View {
 
     var body: some View {
         HStack(spacing: 10) {
-            Button("❌ ยกเลิก") { onCancel() }
-                .buttonStyle(SecondaryButtonStyle())
+            Button("CANCEL") { onCancel() }
+                .buttonStyle(Theme.secondaryButton)
                 .frame(maxWidth: .infinity)
                 .disabled(isDisabled)
+                // ⌘⌫ discards the queue. Same availability split as OK below — the escape
+                // key alone would be surprising next to a macOS-standard dialog.
+                .modifier(ConditionalCommandDeleteShortcut())
 
-            Button(applyTitle) { onApply() }
-                .buttonStyle(AccentButtonStyle())
+            Button("OK") { onApply() }
+                .buttonStyle(Theme.primaryButton)
                 .frame(maxWidth: .infinity)
                 .disabled(isDisabled)
-                // ⌘↩ applies the queue. `keyboardShortcut` is macOS 10.15+, so it is safe on
-                // the deployment floor; the modifiers overload is macOS 11+, which is why the
-                // `.return`-only form is used via the availability-checked helper below.
+                // ⌘↩ applies the queue. `keyboardShortcut` is macOS 11+ in this SDK — *both*
+                // overloads, including the single-argument one — so the 10.15 branch of
+                // `ConditionalCommandReturnShortcut` deliberately applies **no** shortcut
+                // rather than reaching for an API that does not exist on the floor.
                 .modifier(ConditionalCommandReturnShortcut())
+
+            // The queue depth. Its own element so the buttons keep a constant width.
+            // No `.accessibilityLabel(_:)` here: that modifier is **macOS 11+** and this app
+            // deploys to 10.15, so naming it would fail to compile against the floor. The
+            // count is redundant with the orange pending dots on the rows themselves.
+            if pendingCount > 0 {
+                Text("\(pendingCount)")
+                    .font(.system(size: 12, weight: .semibold, design: .rounded))
+                    .foregroundColor(Theme.onAccentColor)
+                    .frame(width: 26, height: 26)
+                    .background(Circle().fill(Theme.pending))
+            }
         }
         .opacity(isDisabled ? 0.45 : 1)
         .padding(.top, 12)
-    }
-
-    private var applyTitle: String {
-        pendingCount == 1 ? "✅ ตกลง (1)" : "✅ ตกลง (\(pendingCount))"
+        .animation(Theme.toggle.animation, value: pendingCount)
     }
 }
 
-/// Applies ⌘↩ as the Apply shortcut on **macOS 11 and newer**.
+/// Applies ⌘↩ as the OK shortcut on **macOS 11 and newer**.
 ///
 /// ## Why the two-type split
 ///
@@ -277,7 +382,33 @@ private struct CommandReturnShortcut: ViewModifier {
     }
 }
 
-/// A quiet, outlined button — used for the master **Cancel** action.
+/// The ⌘⌫ binding for CANCEL, isolated behind its availability exactly as ⌘↩ is.
+///
+/// Exists as its own type rather than a parameter on `ConditionalCommandReturnShortcut`
+/// because each carries a *different* `@available(macOS 11.0, *)` declaration, and the
+/// compiler only narrows a symbol inside the branch whose guard covers it.
+struct ConditionalCommandDeleteShortcut: ViewModifier {
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if #available(macOS 11.0, *) {
+            content.modifier(CommandDeleteShortcut())
+        } else {
+            content
+        }
+    }
+}
+
+/// The ⌘⌫ binding itself, behind its availability.
+@available(macOS 11.0, *)
+private struct CommandDeleteShortcut: ViewModifier {
+
+    func body(content: Content) -> some View {
+        content.keyboardShortcut(.delete, modifiers: .command)
+    }
+}
+
+/// A quiet, outlined button — used for the master **CANCEL** action.
 ///
 /// Deliberately not a pill: it is the destructive half of the pair, and its outline keeps it
 /// visually subordinate to the accent Apply button next to it.

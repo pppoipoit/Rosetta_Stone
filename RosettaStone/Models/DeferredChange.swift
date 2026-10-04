@@ -55,8 +55,15 @@ struct FeatureCommand {
     var timeout: TimeInterval = SystemCommands.defaultTimeout
 
     /// Unprivileged shell run **once for the whole batch**, and only if this command
-    /// succeeded. Exists for `killall Finder`: restarting Finder per change would blink the
-    /// desktop several times in a row for a single batch.
+    /// succeeded — the "finish the job after the write" slot.
+    ///
+    /// Introduced for `killall Finder`, which had to run once per batch rather than once per
+    /// row so a queue touching four things did not blink the desktop four times. Phase 11
+    /// removed that need by refreshing Finder through AppleScript instead, so **nothing sets
+    /// this today**. The mechanism is retained deliberately: it is the only place in the
+    /// batch runner that understands "this step belongs to the batch, not to the row", and
+    /// the next feature that needs that should not have to re-derive the sequencing (or
+    /// discover the ordering bug that per-row execution invites).
     var batchPostStep: String?
 
     init(feature: FeatureID,

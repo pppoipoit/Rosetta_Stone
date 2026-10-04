@@ -28,6 +28,13 @@ import Combine
 /// provides the SwiftUI `App` entry point on macOS 11+ and `main.swift` falls back to
 /// this delegate on 10.15 — both funnel into the same delegate, so there is only ever
 /// one code path for behaviour.
+///
+/// ## The main menu is built here, not in a nib
+///
+/// `Info.plist` carries no `NSMainNibFile`, so nothing loads a menu bar. The app would
+/// therefore have **no** application menu at all — and with it no ⌘Q, no ⌘W, and no way to
+/// reach Quit from the keyboard. `installMainMenu()` builds one in code, which is what makes
+/// those shortcuts real rather than aspirational (Phase 11).
 final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// Observable state shared by the window and the menu-bar menu.
@@ -113,6 +120,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menuBarController = controller
         isReady = true
 
+        // The menu is installed **after** the presenter exists, because every item in it
+        // targets the controller. Installing it earlier would leave items pointing at a
+        // presenter that does not exist yet if the menu bar were reachable during launch.
+        installMainMenu()
+
         // Unprivileged state read: opening the app must never cost a password prompt.
         coordinator.loadState()
 
@@ -197,6 +209,141 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// explicit action: ⌘Q, or Quit in the status-item menu.
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         false
+    }
+
+    // MARK: - The main menu (Phase 11)
+
+    /// Builds the application menu in code, so ⌘Q, ⌘W and ⌘M actually exist.
+    ///
+    /// ## Why in code rather than a nib
+    ///
+    /// `Info.plist` has no `NSMainNibFile` — deliberately, since the app owns its window
+    /// explicitly rather than letting AppKit load one. The side effect is that AppKit never
+    /// installs a default menu, and an app with no application menu has no ⌘Q: on macOS the
+    /// Quit item lives in that menu, not in the status-item dropdown. A user who has learned
+    /// that ⌘Q quits an app would reasonably conclude this one is stuck.
+    ///
+    /// Building it in code keeps the no-nib property intact and makes the shortcuts real
+    /// without opening Interface Builder.
+    ///
+    /// ## What is deliberately absent
+    ///
+    /// No "New", "Open" or Services menu. This app has one window, one panel and no
+    /// documents, so a row of empty items is noise. The two menus built are the two that
+    /// hold something real.
+    func installMainMenu() {
+        let mainMenu = NSMenu()
+
+        // --- Application menu: the only home of ⌘Q -------------------------------------
+        // `submenu`, not a plain item: macOS requires the first item of the main menu to
+        // carry a submenu, and this is the one the system treats as the app's own menu.
+        let appMenuItem = NSMenuItem()
+        let appMenu = NSMenu(title: "Rosetta Stone")
+
+        let about = NSMenuItem(title: "About Rosetta Stone",
+                               action: #selector(presentAbout),
+                               keyEquivalent: "")
+        about.target = self
+        appMenu.addItem(about)
+        appMenu.addItem(.separator())
+
+        let hide = NSMenuItem(title: "Hide Rosetta Stone",
+                              action: #selector(NSApplication.hide(_:)),
+                              keyEquivalent: "h")
+        appMenu.addItem(hide)
+
+        // `terminate`, not a custom action: the system selector is what performs the
+        // standard termination dance (saving state, asking delegates for consent).
+        let quit = NSMenuItem(title: "Quit Rosetta Stone",
+                              action: #selector(NSApplication.terminate(_:)),
+                              keyEquivalent: "q")
+        appMenu.addItem(quit)
+
+        appMenuItem.submenu = appMenu
+        mainMenu.addItem(appMenuItem)
+
+        // --- Window menu: ⌘W hides rather than closes -----------------------------------
+        let windowMenuItem = NSMenuItem()
+        let windowMenu = NSMenu(title: "Window")
+
+        let mainWindow = NSMenuItem(title: "Main Panel",
+                                    action: #selector(showMainWindow),
+                                    keyEquivalent: "")
+        mainWindow.target = self
+        windowMenu.addItem(mainWindow)
+
+        let mini = NSMenuItem(title: "Mini Panel",
+                              action: #selector(showMiniPanel),
+                              keyEquivalent: "m")
+        mini.target = self
+        windowMenu.addItem(mini)
+
+        windowMenu.addItem(.separator())
+
+        // ⌘W **hides** the panel rather than closing it — the owner-specified "minimize to
+        // the menu bar" behaviour. It has to hide: `isReleasedWhenClosed = false` keeps the
+        // `NSHostingView` alive across a close, but a closed window also drops out of the
+        // Window menu and stops being key, and in mode B there is no Dock icon to click.
+        // Ordering it out preserves every one of those properties.
+        let close = NSMenuItem(title: "Close Panel",
+                               action: #selector(hideMainWindow),
+                               keyEquivalent: "w")
+        windowMenu.addItem(close)
+
+        let minimize = NSMenuItem(title: "Minimize",
+                                  action: #selector(NSWindow.performMiniaturize(_:)),
+                                  keyEquivalent: "m")
+        windowMenu.addItem(minimize)
+
+        windowMenuItem.submenu = windowMenu
+        mainMenu.addItem(windowMenuItem)
+
+        NSApp.mainMenu = mainMenu
+        // Assigning `windowsMenu` is what makes the system maintain the Window menu's own
+        // "Bring All to Front" and miniaturise entries.
+        NSApp.windowsMenu = windowMenu
+        Trace.log("main menu installed (Quit=⌘Q Close=⌘W Mini=⌘M)")
+    }
+    /// Shows the main panel. Routed from the Window menu.
+    @objc private func showMainWindow() {
+        menuBarController?.showMainWindow()
+    }
+
+    /// Shows the mini panel. Routed from the Window menu.
+    ///
+    /// Goes through the controller rather than building anything here, so the menu route and
+    /// the left-click route present the *same* panel anchored to the *same* status item.
+    @objc private func showMiniPanel() {
+        menuBarController?.presentMiniPanelFromMenu()
+    }
+
+    /// ⌘W — orders the panel out without closing or destroying it.
+    ///
+    /// The app stays alive and reachable in **both** modes: mode B through the status item,
+    /// mode A through the Dock icon (`applicationShouldHandleReopen`). Closing would also
+    /// work, but ordering out is reversible in every state and destroys nothing.
+    @objc private func hideMainWindow() {
+        assert(Thread.isMainThread, "menu actions arrive on the main thread")
+        guard let controller = menuBarController else {
+            Trace.log("hideMainWindow ignored: no presenter yet")
+            return
+        }
+        controller.hideAllWindows()
+        Trace.log("main panel hidden to the menu bar (⌘W)")
+    }
+
+    /// The About box. Minimal, but it is where the version lives once the panel is hidden.
+    @objc private func presentAbout() {
+        let alert = NSAlert()
+        alert.alertStyle = .informational
+        alert.messageText = "Rosetta Stone"
+        alert.informativeText = "Version \(MenuBarController.versionString)\n"
+            + "A Mac maintenance panel for Gatekeeper, hidden files, power and Rosetta.\n\n"
+            + "Icons derived from a CC BY-SA 3.0 source; full attribution is in the project "
+            + "repository."
+        alert.addButton(withTitle: "OK")
+        NSApp.activate(ignoringOtherApps: true)
+        alert.runModal()
     }
 
     // MARK: - URL scheme

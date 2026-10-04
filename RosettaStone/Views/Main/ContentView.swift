@@ -3,9 +3,13 @@ import AppKit
 
 /// The dark-mode feature panel — the app's only window.
 ///
-/// ## Row order (fixed, from `docs/FEATURES.md` "Row order")
-/// 1. Run at Startup · 2. Gatekeeper · 3. Hidden Files · 4. Auto Boot ·
-/// 5. Rosetta 2 · 6. Quick Tools (Spotlight / DNS / Cache)
+/// ## Row order (owner-specified, Phase 11 — `FeatureID.panelRowOrder`)
+/// 1. **Gatekeeper** · 2. **Auto Boot** · 3. **Hidden Files** · 4. **Run at Startup** ·
+/// 5. **Rosetta 2** · 6. **Quick Tools** (Spotlight / DNS / Cache)
+///
+/// The two rows people reach for constantly lead, then the two posture rows. Run at Startup
+/// moved **below** the rows whose behaviour it changes, so the switch that governs the app's
+/// whole posture is not the first thing the eye lands on and cannot be flipped by accident.
 ///
 /// ## Hardware gating
 /// Two rows are gated on the cached `MacProfile` (ADR-008):
@@ -116,11 +120,21 @@ struct ContentView: View {
     /// The subtitle reads e.g. `macOS 15.4 · Intel · Laptop` — the architecture **and** the
     /// form factor. The Auto Boot lock now depends on both, so an architecture-only caption
     /// would be actively misleading on an Intel Mac mini, whose Auto Boot row is locked.
+    ///
+    /// The **status dot** to the right of the title is the always-visible Gatekeeper
+    /// indicator (Phase 11). It answers "is this Mac protected?" without the user having to
+    /// find and read row 1 — the single most security-relevant fact about the machine, shown
+    /// in the one place the eye always lands. Green = Gatekeeper active, red = bypassed,
+    /// grey = the state could not be read (never green: an unknown is not a safe answer).
     private var header: some View {
         VStack(spacing: 4) {
-            Text("Rosetta Stone")
-                .font(.system(size: 21, weight: .bold))
-                .foregroundColor(Theme.title)
+            HStack(spacing: 8) {
+                Text("Rosetta Stone")
+                    .font(.system(size: 21, weight: .bold))
+                    .foregroundColor(Theme.title)
+
+                GatekeeperStatusDot(state: coordinator.gatekeeperBypassed)
+            }
             Text("macOS \(ContentView.osVersionText) · \(coordinator.architecture.displayName)"
                + " · \(coordinator.profile.formFactor.displayName)")
                 .font(.system(size: 11))
@@ -158,7 +172,7 @@ struct ContentView: View {
                 // Reachable in **both** modes: mode A has no menu-bar icon, so this is
                 // the only way to the diagnostics report there.
                 Button("Diagnostics…") { onShowDiagnostics?() }
-                    .buttonStyle(QuietLinkButtonStyle())
+                    .buttonStyle(Theme.quietLinkButton)
                     .disabled(coordinator.isBusy)
             }
         }
@@ -167,36 +181,51 @@ struct ContentView: View {
 
     // MARK: - Rows
 
-    /// The five feature rows, in the fixed order, plus the Quick Tools grid.
+    /// The five feature rows in the owner-specified order, plus the Quick Tools grid.
+    ///
+    /// ## Why the order is written out longhand and not generated
+    ///
+    /// It could be driven from `FeatureID.panelRowOrder`, but that would put a `switch` in
+    /// the middle of a view hierarchy to decide whether a row is a toggle, a one-shot
+    /// install button, or a Quick Tool pill — three genuinely different rows that happen to
+    /// share a position. Naming them here keeps each row's *rendering* decision next to its
+    /// *position*, which is the thing a future reorder actually changes.
     private var rows: some View {
         VStack(spacing: 0) {
-            // 1. Run at Startup — admin
-            toggleRow(feature: .runAtStartup)
-            RowSeparator()
-
-            // 2. Gatekeeper — admin, INVERTED: ON == bypassed (less secure)
+            // 1. Gatekeeper — admin, INVERTED: ON == bypassed (less secure)
             toggleRow(feature: .gatekeeper)
             RowSeparator()
 
-            // 3. Hidden Files — no elevation, INVERTED: ON == hidden files shown
-            toggleRow(feature: .hiddenFiles)
-            RowSeparator()
-
-            // 4. Auto Boot — admin, **Intel MacBook only**. Greyed + 🔒 wherever the profile says the
-            // setting is meaningless: Apple Silicon (firmware owns `AutoBoot`, NVRAM reset
-            // every cold boot) and desktops (no lid). Both the subtitle and the hover tooltip
-            // come from `MacProfile.autoBootDisabledReason`, so a greyed row always explains
-            // itself. The row stays wrapped in `TooltipHost` because a `.disabled(true)` row
-            // cannot show a SwiftUI `.help(_:)` — that is macOS 11+ and this app is 10.15.
+            // 2. Auto Boot — admin, **Intel MacBook only**. Greyed + 🔒 wherever the profile
+            // says the setting is meaningless: Apple Silicon (firmware owns `AutoBoot`, NVRAM
+            // reset every cold boot) and desktops (no lid). Both the subtitle and the hover
+            // tooltip come from `MacProfile.autoBootDisabledReason`, so a greyed row always
+            // explains itself. The row stays wrapped in `TooltipHost` because a `.disabled(true)`
+            // row cannot show a SwiftUI `.help(_:)` — that is macOS 11+ and this app is 10.15.
             TooltipHost(
                 text: lockedTooltip(for: .autoBoot),
                 content: toggleRow(feature: .autoBoot)
             )
             RowSeparator()
 
+            // 3. Hidden Files — no elevation, INVERTED: ON == hidden files shown
+            toggleRow(feature: .hiddenFiles)
+            RowSeparator()
+
+            // 4. Run at Startup — the posture switch. Deliberately **fourth**: it is the
+            // most consequential control in the app and must not be the first thing under
+            // the user's cursor.
+            toggleRow(feature: .runAtStartup)
+            RowSeparator()
+
             // 5. Rosetta 2 — admin, Apple Silicon only. Disabled + lock on x86_64.
             rosettaRow
-            RowSeparator()
+
+            // A real separator before the tools: they are a different *kind* of action
+            // (one-shot maintenance), and a hairline is what makes that read at a glance
+            // without needing a heading.
+            Divider()
+                .padding(.vertical, 18)
 
             // 6. Quick Tools
             quickTools
@@ -226,9 +255,9 @@ struct ContentView: View {
     /// ## Pending state (ADR-009)
     ///
     /// The pill shows the **staged** value, not the applied one — the user must see what they
-    /// asked for. The orange dot beside the title is what distinguishes the two: it appears
-    /// exactly when `pending != actual`, so a glance answers "what will change on Apply?"
-    /// without applying anything.
+    /// asked for. The orange dot rides **on the switch** (`PendingPillSwitch`), not beside the
+    /// title: the dot answers "will this switch change?", so it belongs on the switch, where
+    /// that answer is acted on.
     private func toggleRow(feature: FeatureID) -> some View {
         let availability = coordinator.availability(for: feature)
         let isBusy = coordinator.busyFeature == feature
@@ -241,7 +270,7 @@ struct ContentView: View {
         return Button {
             // Stages the opposite of what the pill currently shows. Deriving from the
             // *staged* value (falling back to actual) is what makes a second tap before
-            // Apply flip the row back rather than trying to stage the same value twice.
+            // OK flip the row back rather than trying to stage the same value twice.
             let next = !staged
             // Auto Boot is the one toggle that cannot simply stage: it writes firmware NVRAM
             // that survives reboots, reinstalls and upgrades, so it keeps its confirmation
@@ -254,17 +283,11 @@ struct ContentView: View {
         } label: {
             HStack(spacing: 12) {
                 VStack(alignment: .leading, spacing: 2) {
-                    HStack(spacing: 5) {
-                        Text(feature.title)
-                            .font(.system(size: 15, weight: .regular))
-                            .foregroundColor(availability.isEnabled ? Theme.primaryText : Theme.secondaryText)
-                        // Staged, but not yet applied. Hidden on a locked row: there is
-                        // nothing to stage on a row the user cannot operate.
-                        if isPending && availability.isEnabled {
-                            PendingDot()
-                        }
-                    }
-                    Text(availability.lockReason ?? feature.detail)
+                    Text(feature.displayName)
+                        .font(.system(size: 15, weight: .regular))
+                        .foregroundColor(availability.isEnabled ? Theme.primaryText : Theme.secondaryText)
+
+                    Text(availability.lockReason ?? feature.description)
                         .font(.system(size: 11))
                         .foregroundColor(Theme.secondaryText.opacity(0.85))
                         .lineLimit(2)
@@ -274,13 +297,16 @@ struct ContentView: View {
                 Spacer(minLength: 8)
 
                 // The padlock replaces the switch when the row is unavailable; the
-                // spinner replaces it while the row's command is in flight.
+                // spinner replaces it while the row's command is in flight. A locked or
+                // busy row draws neither a switch nor a pending dot, because there is
+                // nothing there to stage.
                 if availability.isEnabled == false {
                     LockIcon()
                 } else if isBusy {
                     BusySpinner()
                 } else {
-                    PillSwitch(isOn: staged)
+                    PendingPillSwitch(isOn: staged,
+                                      hasPendingChange: isPending)
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -301,6 +327,11 @@ struct ContentView: View {
     ///   "this feature is missing" rather than "this Mac cannot use it" (FEATURES.md §5).
     /// - **installed**: a disabled "Installed" chip, so no password prompt is ever offered,
     /// - **available**: the live yellow "Install" button from the mock-up.
+    /// ## Pending state
+    ///
+    /// Rosetta 2 is a one-shot **action**, not a toggle, so it has no switch to hang a dot
+    /// on. The dot therefore stays inline, in the title's `HStack` — the same visual token as
+    /// every other row's pending marker, just anchored where it has to be.
     private var rosettaRow: some View {
         let availability = coordinator.availability(for: .rosetta2)
         let isBusy = coordinator.busyFeature == .rosetta2
@@ -309,14 +340,14 @@ struct ContentView: View {
         return HStack(spacing: 12) {
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 5) {
-                    Text(FeatureID.rosetta2.title)
+                    Text(FeatureID.rosetta2.displayName)
                         .font(.system(size: 15, weight: .regular))
                         .foregroundColor(availability.isEnabled ? Theme.primaryText : Theme.secondaryText)
                     if isQueued && availability.isEnabled {
                         PendingDot()
                     }
                 }
-                Text(availability.lockReason ?? FeatureID.rosetta2.detail)
+                Text(availability.lockReason ?? FeatureID.rosetta2.description)
                     .font(.system(size: 11))
                     .foregroundColor(Theme.secondaryText.opacity(0.85))
                     .lineLimit(2)
@@ -339,7 +370,7 @@ struct ContentView: View {
                     .padding(.vertical, 8)
                     .background(
                         RoundedRectangle(cornerRadius: 8, style: .continuous)
-                            .fill(Color.white.opacity(0.06))
+                            .fill(Theme.panelSurface)
                     )
                     .overlay(
                         RoundedRectangle(cornerRadius: 8, style: .continuous)
@@ -360,7 +391,7 @@ struct ContentView: View {
                 // (ADR-009): the user is told what they are queuing, before the
                 // password prompt, not after it.
                 Button(isQueued ? "Queued" : "Install") { confirmRosettaInstall() }
-                    .buttonStyle(AccentButtonStyle())
+                    .buttonStyle(Theme.primaryButton)
                     .disabled(coordinator.isBusy || availability.isEnabled == false)
             }
         }
@@ -413,7 +444,7 @@ struct ContentView: View {
                 Text(isQueued ? "\(title) · queued" : title)
             }
         }
-        .buttonStyle(QuickToolButtonStyle())
+        .buttonStyle(Theme.quickToolButton)
         .disabled(coordinator.isBusy)
     }
 
@@ -554,11 +585,31 @@ struct ContentView: View {
         pendingChanges[feature] = .action
     }
 
-    /// Commits the whole queue: **one** Authorization dialog for every privileged row.
+/// Commits the whole queue: **one** Authorization dialog for every privileged row.
     ///
-    /// Commands are built in `FeatureID.allCases` order, so the batch always runs in the
-    /// fixed row order the panel displays, regardless of the order the user tapped. It also
-    /// means the results dialog reads in the same order as the panel.
+    /// Commands are built in `FeatureID.allCases` order, so the batch always runs in a fixed
+    /// order regardless of the order the user tapped — and the results dialog reads in the
+    /// same order the batch committed in.
+    ///
+    /// ## Why the queue empties unconditionally (Phase 11)
+    ///
+    /// The previous behaviour kept a row's dot lit when its command *failed*, so the user
+    /// could fix the cause and press OK again without re-staging. That was defensible, but
+    /// it left the panel permanently in a half-staged state that looks identical to "I have
+    /// work queued" — and the single most confusing thing this panel can do is be ambiguous
+    /// about what pressing OK will do.
+    ///
+    /// Owner decision, now the contract: **OK empties the queue, always.** The per-item
+    /// results dialog carries the failures, so nothing is lost — the user is told exactly
+    /// which rows failed and why, and re-staging is one click per row. What is given up is
+    /// only the convenience of a pre-filled retry, in exchange for a panel whose dots mean
+    /// exactly one thing.
+    ///
+    /// ## The one exception: a dismissed password dialog
+    ///
+    /// `wasCancelled` means the user closed the Authorization sheet, which is an answer of
+    /// "not now" rather than a result. The queue survives so OK can simply be pressed again
+    /// once they are ready — nothing ran, so nothing needs re-deciding.
     private func applyPendingChanges() {
         guard pendingChanges.isEmpty == false, coordinator.isBusy == false else { return }
 
@@ -576,31 +627,36 @@ struct ContentView: View {
 
         coordinator.applyBatch(commands) { report in
             // No `[weak self]`: `ContentView` is a **struct**, so `weak` does not apply to it.
-            // A struct captured in an escaping closure copies its state — and `@State` storage is
-            // backed by a reference, so the captured copy stays live.
+            // A struct captured in an escaping closure copies its state — and `@State` storage
+            // is backed by a reference, so the captured copy stays live.
             //
-            // The queue is cleared here rather than optimistically at the press, so a
-            // **cancelled** batch leaves it intact and ✅ can simply be pressed again. Entries
-            // whose command never made it into the batch (already satisfied) are dropped,
-            // because they can never become runnable.
-            if report.wasCancelled {
-                return
-            }
-            pendingChanges = pendingChanges.filter { feature, _ in
-                report.outcome(for: feature) != nil
-            }
-            // A per-item dialog is raised only when something actually failed; the all-success
-            // case is already covered by the footer banner.
+            // Dismissed Authorization dialog: keep everything staged, silently. The user said
+            // "not now" to the whole set, so a half-emptied queue would misreport what is
+            // still outstanding.
+            guard report.wasCancelled == false else { return }
+
+            // The line that implements the contract above: every dot clears, successful or
+            // not. The coordinator's own post-batch `reloadState()` then repaints the
+            // switches from reality, so what is left on screen is the system's answer.
+            pendingChanges.removeAll()
+
+            // A per-item dialog is raised only when something actually failed; the
+            // all-success case is already covered by the footer banner.
             if report.allSucceeded == false {
                 batchReport = report
             }
         }
     }
 
-    /// Discards the queue. Touches nothing in the system: no command ran, so no confirmation
-    /// is warranted — this is a pure UI reset.
+    /// Discards the queue and snaps the UI back to whatever the system actually reports.
+    ///
+    /// Touches nothing in the system: no command ran, so no confirmation is warranted — this
+    /// is a pure UI reset. The `loadState()` re-read is what makes "reset" mean *reset to
+    /// reality* rather than *reset to what I remember*, which is safe to do unconditionally
+    /// because a state read is unprivileged and therefore free.
     private func cancelPendingChanges() {
         pendingChanges.removeAll()
+        coordinator.loadState()
     }
 }
 
@@ -621,7 +677,8 @@ struct BatchReportSheet: View {
                 .foregroundColor(Theme.title)
 
             Text("\(report.failures.count) of \(report.items.count) change(s) failed. "
-                 + "The rows marked ❌ are still queued — fix the cause and press ✅ ตกลง again.")
+                 + "The switch has been reset to what the system actually reports — "
+                 + "re-stage the rows you want to retry, then press OK.")
                 .font(.system(size: 12))
                 .foregroundColor(Theme.primaryText)
                 .fixedSize(horizontal: false, vertical: true)
@@ -659,7 +716,7 @@ struct BatchReportSheet: View {
             HStack(spacing: 10) {
                 Spacer(minLength: 0)
                 Button("Close") { onDismiss() }
-                    .buttonStyle(ConfirmButtonStyle())
+                    .buttonStyle(Theme.confirmButton)
                     .frame(width: 120)
             }
         }
@@ -692,10 +749,14 @@ struct ConfirmationSheet: View {
             HStack(spacing: 10) {
                 Spacer(minLength: 0)
                 Button("Cancel") { onResult(false) }
-                    .buttonStyle(QuickToolButtonStyle())
+                    .buttonStyle(Theme.quickToolButton)
                     .frame(width: 110)
                 Button(request.confirmTitle) { onResult(true) }
-                    .buttonStyle(ConfirmButtonStyle(isDestructive: request.isDestructive))
+                    // The destructive variant goes through the registry too, so a critical
+                    // confirm can never accidentally pick up the neutral yellow.
+                    .buttonStyle(request.isDestructive
+                                 ? Theme.destructiveButton
+                                 : Theme.confirmButton)
                     .frame(width: 130)
             }
         }
