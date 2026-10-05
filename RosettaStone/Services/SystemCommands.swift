@@ -445,10 +445,11 @@ enum SystemCommands {
         if let errorInfo = errorInfo {
             Trace.batch("hiddenFiles: AppleScript errorInfo=[\(Trace.escaped(String(describing: errorInfo)))]")
         } else {
-            // `?.` rather than `.`: `executeAndReturnError` is declared as an implicitly
-            // unwrapped optional on macOS, so both spellings compile there — optional
-            // chaining is simply the form that cannot trap if the descriptor is ever nil.
-            Trace.batch("hiddenFiles: AppleScript returned=\(Trace.escaped(returned?.stringValue ?? "<no string value>")) errorInfo=nil — Finder refreshed")
+            // Plain `.stringValue`, not `?.`: on macOS `executeAndReturnError` returns a
+            // **non-optional** `NSAppleEventDescriptor`, so optional chaining is a compile
+            // error there. (`NSAppleScript` succeeded at that point in any case — the branch
+            // is only reached when the error dictionary is nil.)
+            Trace.batch("hiddenFiles: AppleScript returned=\(Trace.escaped(returned.stringValue ?? "<no string value>")) errorInfo=nil — Finder refreshed")
         }
         if let errorInfo = errorInfo, let message = errorInfo[NSAppleScript.errorMessage] as? String {
             Trace.batch("hiddenFiles: AppleScript declined — \(Trace.escaped(message))")
