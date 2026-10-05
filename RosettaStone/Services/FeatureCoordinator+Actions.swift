@@ -128,10 +128,20 @@ extension FeatureCoordinator {
         // Only after a successful *disable* on macOS 15+ does System Settings need the
         // user's hand. A failed command must not open System Settings: the failure
         // message and a "go pick Anywhere" instruction would contradict each other.
+        // (5) Same instrumentation as the batch route: the hook's presence and whether it
+        // fired. These two call sites are the only places the follow-up can be raised, and a
+        // difference between them is exactly what the log is here to reveal.
+        Trace.batch("writeGatekeeper: outcome=\(outcome.isSuccess ? "success" : "not-success")"
+                    + " bypassed=\(bypassed)"
+                    + " versionGate=\(SystemCommands.gatekeeperDisableRequiresSystemSettingsConfirmation())"
+                    + " hookInstalled=\(onGatekeeperNeedsConfirmation != nil)")
         if case .success = outcome,
            bypassed,
            SystemCommands.gatekeeperDisableRequiresSystemSettingsConfirmation() {
+            Trace.batch("writeGatekeeper: FIRING onGatekeeperNeedsConfirmation (immediate route)")
             publish { $0.onGatekeeperNeedsConfirmation?() }
+        } else {
+            Trace.batch("writeGatekeeper: NOT firing onGatekeeperNeedsConfirmation (immediate route)")
         }
         return outcome
     }

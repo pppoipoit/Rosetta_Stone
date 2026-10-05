@@ -141,20 +141,37 @@ enum SystemCommands {
         let osascript = "/usr/bin/osascript"
         let script = "do shell script \"\(appleScriptQuoted(command))\" with administrator privileges"
 
+        // (2a) The AppleScript handed to osascript, **verbatim**. An unbalanced quote or an
+        // unescaped backslash inside the elevated command would fail as an opaque AppleScript
+        // error, and the AppleScript text is the only place that failure is visible.
+        Trace.batch("runAsAdmin: osascript -e [\(Trace.escaped(script))]")
+        Trace.batch("runAsAdmin: elevated command [\(Trace.escaped(command))] timeout=\(Int(timeout))s")
+
         let result: ProcessResult
         do {
             result = try run(osascript, ["-e", script], timeout: timeout)
         } catch {
+            Trace.batch("runAsAdmin: LAUNCH FAILED — [\(Trace.escaped(shortDescription(of: error)))]")
             return .failure(message: shortDescription(of: error), exitCode: -1)
         }
+
+        // (2b) The raw result, with control characters made visible. `standardOutput` is
+        // exactly the string `parseBatchMarkers` later scans for `RS_OK:`/`RS_FAIL:` lines, so
+        // this is the one line that can prove a marker was emitted, corrupted, or never
+        // produced at all.
+        Trace.batch("runAsAdmin: exit=\(result.exitCode)")
+        Trace.batch("runAsAdmin: stdout=[\(Trace.escaped(result.standardOutput))]")
+        Trace.batch("runAsAdmin: stderr=[\(Trace.escaped(result.standardError))]")
 
         if result.isSuccess {
             return .success(output: result.standardOutput)
         }
         // osascript reports a dismissed dialog as "execution error: User canceled. (-128)".
         if result.standardError.contains("-128") || result.standardError.lowercased().contains("user canceled") {
+            Trace.batch("runAsAdmin: outcome=cancelled (-128)")
             return .cancelled
         }
+        Trace.batch("runAsAdmin: outcome=failure exit=\(result.exitCode)")
         return .failure(message: result.diagnosticText, exitCode: result.exitCode)
     }
 
@@ -209,10 +226,27 @@ enum SystemCommands {
     ///   means "not now" to the whole set, and running half of it would be exactly the
     ///   half-applied state the queue exists to prevent.
     static func runBatched(_ commands: [FeatureCommand]) -> BatchResult {
-        guard commands.isEmpty == false else { return BatchResult(items: []) }
+        guard commands.isEmpty == false else {
+            Trace.batch("runBatched: called with 0 commands — nothing to do")
+            return BatchResult(items: [])
+        }
 
         let privileged = commands.filter { $0.requiresAdmin }
         let unprivileged = commands.filter { $0.requiresAdmin == false }
+
+        // (1) What was staged, and how each row is going to be carried out. Logged **before**
+        // anything runs, so a batch that never reaches its own outcome (a hang, a crash, a
+        // password dialog that swallows the app) still leaves a record of what it was asked
+        // to do.
+        Trace.batch("runBatched: begin total=\(commands.count) privileged=\(privileged.count) unprivileged=\(unprivileged.count)")
+        for command in commands {
+            let kind = command.shell == nil ? "inline" : "shell"
+            Trace.batch("runBatched: staged id=\(command.marker) requiresAdmin=\(command.requiresAdmin) work=\(kind) timeout=\(Int(command.timeout))s")
+            if let script = command.shell {
+                Trace.batch("runBatched:   staged script=[\(Trace.escaped(script))]")
+            }
+        }
+        Trace.batch("runBatched: os=\(Trace.osVersionText()) arch=\(CPUArchitecture.current.displayName)")
 
         var items: [BatchItemResult] = []
 
@@ -222,41 +256,72 @@ enum SystemCommands {
             // The batch lives or dies by its slowest member: a Rosetta 2 install alongside
             // three toggles must not be cut off at the 30 s default.
             let timeout = privileged.map { $0.timeout }.max() ?? defaultTimeout
+            // (2) The batch script **verbatim**, before it is handed to osascript. This is the
+            // only way to tell "the shell ran and the marker never came back" from "the shell
+            // text itself is wrong" — both surface to the user as an identical silent no-op.
+            Trace.batch("runBatched: elevated batch script (verbatim) >>>[\(Trace.escaped(script))]<<<")
             let outcome = runAsAdmin(script, timeout: timeout)
 
             switch outcome {
             case .cancelled:
+                Trace.batch("runBatched: elevated group cancelled — no command in the batch runs, including the unprivileged half")
                 // The user dismissed the dialog, which is itself the answer. **Nothing in the
                 // batch runs** — including the unprivileged half. Running the LaunchAgent write
                 // here while Gatekeeper silently did not change would produce exactly the
                 // half-applied state the queue exists to prevent: the user said "not now" to
                 // the whole set, so every row reports cancelled and Apply can be pressed again.
-                return BatchResult(items: commands.map {
+                let cancelled = commands.map {
                     BatchItemResult(feature: $0.feature, outcome: .cancelled)
-                })
+                }
+                for item in cancelled {
+                    Trace.batch("runBatched: parsed item id=\(item.feature.rawValue) outcome=cancelled")
+                }
+                return BatchResult(items: cancelled)
             case .failure(let message, _):
                 // The elevated shell itself failed (bad AppleScript, launch failure,
                 // timeout). No marker can be trusted, so no privileged row is reported as
                 // succeeded — but the unprivileged ones are independent and still run.
+                Trace.batch("runBatched: elevated group failed — [\(Trace.escaped(message))]; no privileged marker can be trusted")
                 items += privileged.map {
                     BatchItemResult(feature: $0.feature,
                                     outcome: .failure(message: message, exitCode: -1))
                 }
             case .success(let output):
+                Trace.batch("runBatched: elevated group returned success; parsing markers now")
                 items += parseBatchMarkers(output, commands: privileged)
             }
+        } else {
+            Trace.batch("runBatched: no privileged command in this batch — the Authorization dialog will not appear")
         }
 
         // --- Unprivileged commands, no prompt ---------------------------------------------
+        // (3) Entry into the non-elevated half. Hidden Files runs here, and it is the row that
+        // produced no visible effect on the test machine, so its path is logged as a narrative:
+        // entry → defaults write → AppleScript → Finder refresh → outcome.
+        Trace.batch("runBatched: unprivileged group begin count=\(unprivileged.count)")
         for command in unprivileged {
+            Trace.batch("runBatched: unprivileged running id=\(command.marker) kind=\(command.shell == nil ? "inline" : "shell")")
+            let outcome: CommandOutcome
             switch command.work {
             case .inline(let work):
-                items.append(BatchItemResult(feature: command.feature, outcome: work()))
+                outcome = work()
             case .shell(let script):
-                items.append(BatchItemResult(feature: command.feature,
-                                             outcome: runShell(script, timeout: command.timeout)))
+                outcome = runShell(script, timeout: command.timeout)
             }
+            items.append(BatchItemResult(feature: command.feature, outcome: outcome))
+            Trace.batch("runBatched: unprivileged done id=\(command.feature.rawValue) success=\(outcome.isSuccess)"
+                        + (outcome.failureMessage.map { " failureMessage=[\(Trace.escaped($0))]" } ?? ""))
         }
+
+        // (2c) The parsed `BatchItemResult` list — what the rest of the app will now show the
+        // user. Logged here rather than at the view so it reflects the coordinator's decision
+        // even when the UI is the menu-bar mini panel.
+        Trace.batch("runBatched: end items=\(items.count)")
+        for item in items {
+            Trace.batch("runBatched: parsed item id=\(item.feature.rawValue) succeeded=\(item.succeeded)"
+                        + (item.outcome.failureMessage.map { " message=[\(Trace.escaped($0))]" } ?? ""))
+        }
+        Trace.batch("runBatched: allSucceeded=\(items.allSatisfy { $0.succeeded })")
 
         return BatchResult(items: items)
     }
@@ -361,16 +426,35 @@ enum SystemCommands {
             update every window
         end tell
         """
+        // (3c) The exact source handed to NSAppleScript. A blank/empty `source` here would be
+        // the single most explanatory line in the whole log: it would mean the Finder-refresh
+        // branch never ran, which matches "no Automation permission prompt ever appeared".
+        Trace.batch("hiddenFiles: AppleScript source >>>[\(Trace.escaped(source))]<<<")
         guard let script = NSAppleScript(source: source) else {
+            Trace.batch("hiddenFiles: NSAppleScript(source:) returned nil — the source did not compile")
             return "Finder's AppleScript could not be compiled."
         }
         var errorInfo: NSDictionary?
         // `executeAndReturnError` rather than `executeAndReturnResult`: we care whether the
         // tell block succeeded, not what it returned.
-        _ = script.executeAndReturnError(&errorInfo)
+        let returned = script.executeAndReturnError(&errorInfo)
+        // (3d) The full error dictionary, not just its message. The message alone hides the
+        // two failure modes that look identical from the outside: a TCC refusal
+        // (`-1743 not authorized`) and a genuinely missing Finder window, and they call for
+        // completely different conclusions about whether the preference was written at all.
+        if let errorInfo = errorInfo {
+            Trace.batch("hiddenFiles: AppleScript errorInfo=[\(Trace.escaped(String(describing: errorInfo)))]")
+        } else {
+            // `?.` rather than `.`: `executeAndReturnError` is declared as an implicitly
+            // unwrapped optional on macOS, so both spellings compile there — optional
+            // chaining is simply the form that cannot trap if the descriptor is ever nil.
+            Trace.batch("hiddenFiles: AppleScript returned=\(Trace.escaped(returned?.stringValue ?? "<no string value>")) errorInfo=nil — Finder refreshed")
+        }
         if let errorInfo = errorInfo, let message = errorInfo[NSAppleScript.errorMessage] as? String {
+            Trace.batch("hiddenFiles: AppleScript declined — \(Trace.escaped(message))")
             return message
         }
+        Trace.batch("hiddenFiles: Finder refresh confirmed (no error)")
         return nil
     }
 
@@ -390,16 +474,37 @@ enum SystemCommands {
     /// - Returns: success when the preference was written, even if Finder could not be
     ///   refreshed — see point 2 above. A failure is returned only when the *write* failed.
     static func setHiddenFilesShown(_ shown: Bool) -> CommandOutcome {
-        let write = runShell("\(finderDefaultsTool) write com.apple.finder AppleShowAllFiles "
-                             + (shown ? "YES" : "NO"))
-        guard write.isSuccess else { return write }
+        Trace.batch("hiddenFiles: begin shown=\(shown)")
+        let command = "\(finderDefaultsTool) write com.apple.finder AppleShowAllFiles "
+            + (shown ? "YES" : "NO")
+        Trace.batch("hiddenFiles: running [\(Trace.escaped(command))]")
+        let write = runShell(command)
+        // (3a) The **exit status** of the defaults write, and both streams. This is the load
+        // bearing step of the whole row: everything after it is cosmetic, so "written but
+        // invisible" and "never written" have to be separable here.
+        Trace.batch("hiddenFiles: defaults write success=\(write.isSuccess)"
+                    + (write.failureMessage.map { " message=[\(Trace.escaped($0))]" } ?? "")
+                    + " output=[\(Trace.escaped(write.output))]")
+        // Read the key straight back, so the log carries the value macOS now holds rather
+        // than the value the app asked for.
+        let readBack = (try? SystemCommands.run(finderDefaultsTool,
+                                               ["read", "com.apple.finder", "AppleShowAllFiles"]))
+            .map { "exit=\($0.exitCode) raw=[\(Trace.escaped($0.standardOutput))]" } ?? "unavailable"
+        Trace.batch("hiddenFiles: read-back AppleShowAllFiles \(readBack)")
+        guard write.isSuccess else {
+            Trace.batch("hiddenFiles: aborting before the Finder refresh — the write failed")
+            return write
+        }
 
+        Trace.batch("hiddenFiles: write succeeded — attempting the Finder refresh (3c/3d below)")
         if let problem = refreshFinderWindows() {
             // The preference is written and will apply to the next Finder window, so this is
             // a success with a caveat rather than a failure. Logged so Diagnostics can show it.
             Trace.log("hidden files: preference written, Finder refresh declined (\(problem))")
+            Trace.batch("hiddenFiles: end success-with-note refreshDeclined=[\(Trace.escaped(problem))]")
             return .success(output: "Finder windows were not refreshed (\(problem)).")
         }
+        Trace.batch("hiddenFiles: end success refresh=ok")
         return .success(output: "")
     }
 

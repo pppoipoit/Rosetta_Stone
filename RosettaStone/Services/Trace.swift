@@ -25,6 +25,58 @@ enum Trace {
         NSLog("[RosettaStone] %@", message)
     }
 
+    // MARK: - Batch diagnostics channel (Phase 11.2)
+
+    /// Grep marker for the batch-diagnostics channel. Filter on this in Console.app.
+    static let batchPrefix = "[RS-BATCH]"
+
+    /// Logging-only channel for the Apply (deferred batch) path.
+    ///
+    /// ## Why a second channel
+    ///
+    /// These lines exist to answer one question — "the owner pressed OK, entered a password,
+    /// and nothing happened" — and they are only useful while that is being diagnosed. Keeping
+    /// them behind their own prefix means someone filtering on `[RosettaStone]` still gets the
+    /// lifecycle trace, and someone reproducing the bug filters on `[RS-BATCH]` and gets the
+    /// whole batch path and nothing else.
+    ///
+    /// **No behaviour change.** Every call site of this function is a statement in its own
+    /// right; nothing reads a value back from it.
+    static func batch(_ message: String) {
+        NSLog("%@[RosettaStone] %@", batchPrefix, message)
+    }
+
+    /// Renders a string with its control characters made visible.
+    ///
+    /// This exists because the symptom being diagnosed is partly invisible: `NSLog` and
+    /// Console.app both mangle a bare CR/LF, and a stray `\r` **overwrites the line it was
+    /// printed on**. A marker line that actually contained `\r` would therefore be
+    /// unreproducible from the log — the exact opposite of what this channel is for.
+    ///
+    /// `\r` → `<CR>`, `\n` → `<LF>`, `\t` → `<TAB>`, and any other ASCII control byte becomes
+    /// `<U+XXXX>`. Printable characters pass through untouched, so UTF-8 output (including the
+    /// Thai copy) stays readable.
+    static func escaped(_ value: String) -> String {
+        var out = ""
+        out.reserveCapacity(value.count)
+        for scalar in value.unicodeScalars {
+            switch scalar {
+            case "\r": out += "<CR>"
+            case "\n": out += "<LF>"
+            case "\t": out += "<TAB>"
+            default:
+                // ASCII C0 controls and DEL, tested on the scalar value rather than through
+                // `Unicode.Scalar.Properties` so this cannot drift with Foundation's enums.
+                if scalar.value < 0x20 || scalar.value == 0x7F {
+                    out += "<U+" + String(format: "%04X", scalar.value) + ">"
+                } else {
+                    out.unicodeScalars.append(scalar)
+                }
+            }
+        }
+        return out
+    }
+
     /// Traces the arguments the process was actually launched with.
     ///
     /// Worth logging explicitly: the LaunchAgent now passes `--menu-bar-only`, and if a

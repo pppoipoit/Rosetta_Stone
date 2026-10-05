@@ -22,11 +22,29 @@ enum SystemStateReader {
     /// Returns `nil` when the status could not be read — an unknown is never reported as
     /// OFF, which would misrepresent a managed machine as a protected one.
     static func isGatekeeperBypassed() -> Bool? {
-        guard let result = try? SystemCommands.run(Tool.spctl, ["--status"]), result.isSuccess else { return nil }
-        let output = result.standardOutput.lowercased()
-        if output.contains("assessments disabled") { return true }
-        if output.contains("assessments enabled") { return false }
-        return nil
+        // Captured **once**, then logged. Running the command twice here would be harmless but
+        // it would double every state read for no gain — the raw output of the single run is
+        // all the diagnostics need.
+        let result = try? SystemCommands.run(Tool.spctl, ["--status"])
+        // (4) The **raw** spctl output. The derived Bool below only says "enabled"/"disabled";
+        // this line says what spctl actually printed, which is what distinguishes a genuinely
+        // protected Mac from one where spctl failed, printed something unrecognised, or is
+        // governed by an MDM profile.
+        switch result {
+        case .none:
+            Trace.batch("read: spctl --status — the command could not be launched (nil)")
+            return nil
+        case .some(let value):
+            Trace.batch("read: spctl --status exit=\(value.exitCode)"
+                        + " raw=[\(Trace.escaped(value.standardOutput))]"
+                        + " stderr=[\(Trace.escaped(value.standardError))]")
+            guard value.isSuccess else { return nil }
+            let output = value.standardOutput.lowercased()
+            if output.contains("assessments disabled") { return true }
+            if output.contains("assessments enabled") { return false }
+            Trace.batch("read: spctl --status — recognised neither 'assessments enabled' nor 'assessments disabled'")
+            return nil
+        }
     }
 
     /// `defaults read com.apple.finder AppleShowAllFiles` → 1 = shown, 0 = hidden.
@@ -35,11 +53,21 @@ enum SystemStateReader {
     /// which is hidden — so a read failure is OFF here, unlike Gatekeeper, where the
     /// equivalent unknown is deliberately preserved (`docs/FEATURES.md` §3).
     static func areHiddenFilesShown() -> Bool {
-        guard let result = try? SystemCommands.run(Tool.defaults,
-                                                   ["read", "com.apple.finder", "AppleShowAllFiles"]),
-              result.isSuccess else { return false }
-        let value = result.standardOutput.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        return value == "1" || value == "true" || value == "yes"
+        let result = try? SystemCommands.run(Tool.defaults,
+                                             ["read", "com.apple.finder", "AppleShowAllFiles"])
+        guard let value = result else {
+            Trace.batch("read: defaults read AppleShowAllFiles — could not be launched (nil); treated as hidden")
+            return false
+        }
+        // (4) Raw value, same reason as `spctl` above. A non-zero exit is **normal** when the
+        // key has never been written — the output is "does not exist", which is itself the
+        // answer — so the raw text is logged rather than treated as an error.
+        Trace.batch("read: defaults read AppleShowAllFiles exit=\(value.exitCode)"
+                    + " raw=[\(Trace.escaped(value.standardOutput))]"
+                    + " stderr=[\(Trace.escaped(value.standardError))]")
+        guard value.isSuccess else { return false }
+        let raw = value.standardOutput.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return raw == "1" || raw == "true" || raw == "yes"
     }
 
     /// `nvram AutoBoot` → `%03` enabled, `%00` disabled, no output or an unexpected

@@ -611,14 +611,31 @@ struct ContentView: View {
     /// "not now" rather than a result. The queue survives so OK can simply be pressed again
     /// once they are ready — nothing ran, so nothing needs re-deciding.
     private func applyPendingChanges() {
-        guard pendingChanges.isEmpty == false, coordinator.isBusy == false else { return }
+        // (1) Entry into the queue commit, from the view. Logged before the guard so a press
+        // of OK that is rejected outright (empty queue, or an operation already running) is
+        // still on record — otherwise "I pressed OK and nothing happened" and "OK was never
+        // pressed" look identical in the log.
+        Trace.batch("panel applyPendingChanges: pressed staged=\(pendingChanges.count) busy=\(coordinator.isBusy)")
+        guard pendingChanges.isEmpty == false, coordinator.isBusy == false else {
+            Trace.batch("panel applyPendingChanges: REJECTED (empty queue or busy)")
+            return
+        }
 
         let commands = FeatureID.allCases.compactMap { feature -> FeatureCommand? in
             guard let pending = pendingChanges[feature] else { return nil }
-            return coordinator.command(for: feature, pending: pending)
+            // A staged change with no command is silently dropped here — Rosetta already
+            // installed, or a row that became unavailable. Logged, because "I staged a change
+            // and it was never attempted" is otherwise indistinguishable from a silent failure.
+            guard let command = coordinator.command(for: feature, pending: pending) else {
+                Trace.batch("panel applyPendingChanges: staged change produced NO command — id=\(feature.rawValue)")
+                return nil
+            }
+            Trace.batch("panel applyPendingChanges: staged id=\(feature.rawValue) requiresAdmin=\(command.requiresAdmin)")
+            return command
         }
 
         guard commands.isEmpty == false else {
+            Trace.batch("panel applyPendingChanges: every staged change was a no-op — dropping the queue")
             // Every staged change was a no-op (e.g. Rosetta already installed). Nothing to
             // run, so drop the queue rather than leaving undotable rows behind.
             pendingChanges.removeAll()

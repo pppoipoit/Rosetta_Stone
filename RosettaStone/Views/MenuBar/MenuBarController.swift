@@ -107,9 +107,12 @@ final class MenuBarController: NSObject {
 
         // The macOS 15+ Gatekeeper follow-up is a UI concern, so the coordinator reaches
         // the UI through this hook instead of importing AppKit itself.
+        Trace.batch("menu bar: installing onGatekeeperNeedsConfirmation hook")
         coordinator.onGatekeeperNeedsConfirmation = { [weak self] in
             self?.presentGatekeeperSettingsConfirmation()
         }
+        Trace.batch("menu bar: onGatekeeperNeedsConfirmation hook installed ="
+                    + " \(coordinator.onGatekeeperNeedsConfirmation != nil)")
 
         // The window is NOT optional in either mode: mode B needs it for "Open Main
         // Window" and the destructive-action sheet, mode A is nothing but the window.
@@ -675,8 +678,18 @@ final class MenuBarController: NSObject {
 
         DispatchQueue.main.asyncAfter(deadline: .now() + MenuBarController.settingsFollowUpDelay) {
             Trace.log("gatekeeper: opening System Settings after the delay")
+            // (5) Whether the deep link actually opened. `NSWorkspace.open` returns `false`
+            // when the URL scheme is not handled — which would explain "no System Settings
+            // window appeared" with everything else reporting success.
+            //
+            // The alert below is raised **regardless** of the deep link's fate, exactly as
+            // before this instrumentation: the instruction the user needs does not depend on
+            // System Settings having been brought to the front.
             if let url = URL(string: GatekeeperPolicy.settingsURL) {
-                _ = NSWorkspace.shared.open(url)
+                let opened = NSWorkspace.shared.open(url)
+                Trace.batch("gatekeeper settings: NSWorkspace.open(\(GatekeeperPolicy.settingsURL)) -> \(opened)")
+            } else {
+                Trace.batch("gatekeeper settings: URL(string:) returned nil for [\(GatekeeperPolicy.settingsURL)]")
             }
 
             let alert = NSAlert()

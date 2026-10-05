@@ -163,6 +163,16 @@ final class FeatureCoordinator: ObservableObject {
         let autoBoot = SystemStateReader.isAutoBootEnabled()
         let rosetta = SystemStateReader.isRosettaInstalled()
 
+        // (4) The macOS **major version** plus the values every read above resolved to.
+        // The version is logged because two behaviours are version-gated — the Gatekeeper
+        // two-step (>= 15) and the Hidden Files AppleScript refresh — and a report of "nothing
+        // happened" is uninterpretable without knowing which side of those gates the host is on.
+        Trace.batch("reloadState: macOS=\(Trace.osVersionText()) major=\(ProcessInfo.processInfo.operatingSystemVersion.majorVersion)"
+                    + " gatekeeper=\(gatekeeper.map(String.init) ?? "nil") hiddenFiles=\(hidden)"
+                    + " autoBoot=\(autoBoot.map(String.init) ?? "nil") rosetta=\(rosetta) startup=\(startup) stale=\(stale)")
+        Trace.batch("reloadState: gatekeeper disable requires System Settings confirmation ="
+                    + " \(SystemCommands.gatekeeperDisableRequiresSystemSettingsConfirmation())")
+
         publish { coordinator in
             coordinator.runAtStartup = startup
             coordinator.gatekeeperBypassed = gatekeeper
@@ -281,12 +291,26 @@ final class FeatureCoordinator: ObservableObject {
     ///   results dialog. Called on the **main thread**.
     func applyBatch(_ commands: [FeatureCommand],
                     completion: @escaping (BatchReport) -> Void) {
-        guard commands.isEmpty == false else { return }
+        guard commands.isEmpty == false else {
+            Trace.batch("applyBatch: called with 0 commands — nothing to do")
+            return
+        }
+
+        // (1) Every staged command with its `requiresAdmin` flag, logged here — the **entry
+        // point** of the batch, before the lock is even taken. The view hands over commands
+        // only; it never sees the flag, so a row silently landing in the wrong privilege group
+        // would otherwise be invisible until it failed.
+        Trace.batch("applyBatch: \(commands.count) command(s) staged")
+        for command in commands {
+            Trace.batch("applyBatch: staged id=\(command.marker) requiresAdmin=\(command.requiresAdmin)"
+                        + " postStep=\(command.batchPostStep.map { "[\($0)]" } ?? "none")")
+        }
 
         queue.async { [weak self] in
             guard let self = self else { return }
 
             if let running = self.activeFeature {
+                Trace.batch("applyBatch: REJECTED — an operation is already in flight (\(running.title ?? "batch"))")
                 self.publish { $0.statusMessage = StatusMessage(
                     text: running.title.map { "“\($0)” is still running — please wait for it to finish." }
                         ?? "Changes are still being applied — please wait.",
@@ -294,6 +318,7 @@ final class FeatureCoordinator: ObservableObject {
                 return
             }
 
+            Trace.batch("applyBatch: lock acquired (.batch); starting SystemCommands.runBatched")
             self.activeFeature = .batch
             self.publish { $0.isApplyingBatch = true }
 
@@ -315,10 +340,23 @@ final class FeatureCoordinator: ObservableObject {
             // The macOS 15+ Gatekeeper follow-up still runs, but **only** if the batch actually
             // disabled Gatekeeper successfully. Opening System Settings after a failed or
             // cancelled `spctl` would contradict the message the user is looking at.
-            if case .success? = report.outcome(for: .gatekeeper),
-               SystemStateReader.isGatekeeperBypassed() == true,
+            // (5) Logged at each step: the hook's existence, the three conditions it is gated
+            // on, and whether it actually fired. A silent no-op here is the reason the
+            // System Settings follow-up never appeared.
+            let gatekeeperOutcome = report.outcome(for: .gatekeeper)
+            Trace.batch("applyBatch: gatekeeper follow-up — hook installed=\(self.onGatekeeperNeedsConfirmation != nil)"
+                        + " outcome=\(gatekeeperOutcome.map { $0.isSuccess ? "success" : "not-success" } ?? "absent from batch")")
+            let bypassedNow = SystemStateReader.isGatekeeperBypassed()
+            Trace.batch("applyBatch: gatekeeper follow-up — spctl now bypassed=\(bypassedNow.map(String.init) ?? "nil")"
+                        + " versionGate=\(SystemCommands.gatekeeperDisableRequiresSystemSettingsConfirmation())")
+            if case .success? = gatekeeperOutcome,
+               bypassedNow == true,
                SystemCommands.gatekeeperDisableRequiresSystemSettingsConfirmation() {
+                Trace.batch("applyBatch: FIRING onGatekeeperNeedsConfirmation")
                 self.publish { $0.onGatekeeperNeedsConfirmation?() }
+                Trace.batch("applyBatch: onGatekeeperNeedsConfirmation dispatched")
+            } else {
+                Trace.batch("applyBatch: NOT firing onGatekeeperNeedsConfirmation")
             }
 
             // Release the lock *before* the main-thread publishes are delivered, for the same

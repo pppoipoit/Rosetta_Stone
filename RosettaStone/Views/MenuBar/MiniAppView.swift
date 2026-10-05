@@ -229,14 +229,26 @@ struct MiniAppView: View {
     /// Commits the queue: one Authorization dialog for the lot, then every dot clears
     /// unconditionally (Phase 11) and reality is re-read.
     private func applyPendingChanges() {
-        guard pending.isEmpty == false, coordinator.isBusy == false else { return }
+        // (1) Same entry logging as the main panel — the mini panel is a separate queue with
+        // its own OK button, so a press here is a separate event in the log.
+        Trace.batch("mini applyPendingChanges: pressed staged=\(pending.count) busy=\(coordinator.isBusy)")
+        guard pending.isEmpty == false, coordinator.isBusy == false else {
+            Trace.batch("mini applyPendingChanges: REJECTED (empty queue or busy)")
+            return
+        }
 
         let commands = FeatureID.allCases.compactMap { feature -> FeatureCommand? in
             guard let staged = pending[feature] else { return nil }
-            return coordinator.command(for: feature, pending: staged)
+            guard let command = coordinator.command(for: feature, pending: staged) else {
+                Trace.batch("mini applyPendingChanges: staged change produced NO command — id=\(feature.rawValue)")
+                return nil
+            }
+            Trace.batch("mini applyPendingChanges: staged id=\(feature.rawValue) requiresAdmin=\(command.requiresAdmin)")
+            return command
         }
 
         guard commands.isEmpty == false else {
+            Trace.batch("mini applyPendingChanges: every staged change was a no-op — dropping the queue")
             // Everything staged turned out to be a no-op. Drop the queue rather than
             // leaving undotable rows behind.
             pending.removeAll()
