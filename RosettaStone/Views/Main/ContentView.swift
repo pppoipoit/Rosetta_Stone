@@ -121,20 +121,16 @@ struct ContentView: View {
     /// form factor. The Auto Boot lock now depends on both, so an architecture-only caption
     /// would be actively misleading on an Intel Mac mini, whose Auto Boot row is locked.
     ///
-    /// The **status dot** to the right of the title is the always-visible Gatekeeper
-    /// indicator (Phase 11). It answers "is this Mac protected?" without the user having to
-    /// find and read row 1 — the single most security-relevant fact about the machine, shown
-    /// in the one place the eye always lands. Green = Gatekeeper active, red = bypassed,
-    /// grey = the state could not be read (never green: an unknown is not a safe answer).
+    /// The header carries the title and the subtitle only (Phase 11.4): the always-visible
+    /// Gatekeeper status dot was removed by owner decision — row 1 answers the same
+    /// question with the real value, and an unreadable state now shows the grey
+    /// "unknown" tooltip instead (`GatekeeperPolicy.unknownTooltip`).
     private var header: some View {
         VStack(spacing: 4) {
-            HStack(spacing: 8) {
-                Text("Rosetta Stone")
-                    .font(.system(size: 21, weight: .bold))
-                    .foregroundColor(Theme.title)
+            Text("Rosetta Stone")
+                .font(.system(size: 21, weight: .bold))
+                .foregroundColor(Theme.title)
 
-                GatekeeperStatusDot(state: coordinator.gatekeeperBypassed)
-            }
             Text("macOS \(ContentView.osVersionText) · \(coordinator.architecture.displayName)"
                + " · \(coordinator.profile.formFactor.displayName)")
                 .font(.system(size: 11))
@@ -192,8 +188,15 @@ struct ContentView: View {
     /// *position*, which is the thing a future reorder actually changes.
     private var rows: some View {
         VStack(spacing: 0) {
-            // 1. Gatekeeper — admin, INVERTED: ON == bypassed (less secure)
-            toggleRow(feature: .gatekeeper)
+            // 1. Gatekeeper — admin, **ON == enforcing** (Phase 11.4 owner spec: ON runs
+            // `spctl --master-enable`, OFF runs `spctl --master-disable`). When `spctl
+            // --status` could not be parsed the row stays fully usable and carries the
+            // grey "unknown" tooltip instead — an unreadable state is never rendered as a
+            // claim in either direction.
+            TooltipHost(
+                text: coordinator.gatekeeperBypassed == nil ? GatekeeperPolicy.unknownTooltip : "",
+                content: toggleRow(feature: .gatekeeper)
+            )
             RowSeparator()
 
             // 2. Auto Boot — admin, **Intel MacBook only**. Greyed + 🔒 wherever the profile
@@ -513,8 +516,8 @@ struct ContentView: View {
     }
 
     /// Feature 8 — the highest-risk action in the app. Confirmation **and** auth prompt.
-    /// The warning copy is shared with the status-item menu and the URL scheme
-    /// (`FeatureID.clearSystemCacheWarning`) so the three can never disagree about the risk.
+    /// The warning copy is shared with the status-item menu
+    /// (`FeatureID.clearSystemCacheWarning`) so the two can never disagree about the risk.
     private func confirmClearCache() {
         pendingConfirmation = ConfirmationRequest(
             title: "Clear the system cache?",
@@ -548,7 +551,11 @@ struct ContentView: View {
     private func actualValue(for feature: FeatureID) -> Bool {
         switch feature {
         case .runAtStartup: return coordinator.runAtStartup
-        case .gatekeeper:   return coordinator.gatekeeperBypassed ?? false
+        // Gatekeeper: the row's ON means **enforcing**, so the pill is on exactly when the
+        // machine is *not* bypassed. `nil` (unreadable) falls back to OFF for display only,
+        // with the grey unknown tooltip on the row — the position is a placeholder, not a
+        // claim, and the value is re-read on every resync.
+        case .gatekeeper:   return coordinator.gatekeeperBypassed == false
         case .hiddenFiles:  return coordinator.hiddenFilesShown
         case .autoBoot:     return coordinator.autoBootEnabled ?? false
         default:            return false
@@ -673,7 +680,7 @@ struct ContentView: View {
     /// because a state read is unprivileged and therefore free.
     private func cancelPendingChanges() {
         pendingChanges.removeAll()
-        coordinator.loadState()
+        coordinator.loadState("panel cancel")
     }
 }
 

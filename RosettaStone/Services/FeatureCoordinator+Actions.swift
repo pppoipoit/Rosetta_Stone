@@ -5,9 +5,9 @@ import Foundation
 /// Split from the coordinator's state machinery purely for file size; the type is
 /// still a single class, so the serial-queue guarantee is unaffected.
 ///
-/// Command strings are built from **constants only**. No user input, URL parameter or
+/// Command strings are built from **constants only**. No user input or
 /// runtime-discovered file name is ever interpolated into a command — that is what
-/// makes `osascript … with administrator privileges` safe to drive from a URL scheme.
+/// makes `osascript … with administrator privileges` safe to run no matter which route built the command — deferred queue, menu item or batch.
 extension FeatureCoordinator {
 
     /// Paths to the tools used by the write paths.
@@ -22,7 +22,10 @@ extension FeatureCoordinator {
     /// invite the two to drift, and a row that writes one preference domain while reading
     /// another is exactly the bug that surfaces as "the toggle does nothing".
     enum Tool {
-        static let spctl = "/usr/sbin/spctl"
+        // `spctl` is deliberately absent: the Gatekeeper write path names its binary in
+        // `SystemCommands.gatekeeperShell(enabling:)`, which is also the table the off-Mac
+        // harness asserts (Phase 11.4). A second spelling here would invite a drift between
+        // the command the UI staged and the command the harness proved.
         static let killall = "/usr/bin/killall"
         static let nvram = "/usr/sbin/nvram"
         static let softwareupdate = "/usr/sbin/softwareupdate"
@@ -60,13 +63,13 @@ extension FeatureCoordinator {
     /// deferred queue uses (`command(for:pending:)`).
     ///
     /// This is why there is exactly one place that knows what `spctl --master-disable` looks
-    /// like. The panel stages a change and the queue batches it; the menu bar and the URL
-    /// scheme run one immediately — and all four routes build their shell from one function,
-    /// so they cannot drift to different commands.
+    /// like. The panel stages a change and the queue batches it; the menu bar runs one
+    /// immediately — and both routes build their shell from one function, so they cannot
+    /// drift to different commands.
     ///
     /// The macOS 15+ Gatekeeper follow-up is deliberately **not** fired from here: it belongs
     /// to the write path's caller, because the batch needs to fire it only after parsing
-    /// markers, and `setGatekeeper` fires it itself.
+    /// markers, and `writeGatekeeper` owns it for the immediate route.
     private func runImmediately(_ feature: FeatureID,
                                 pending: PendingChange,
                                 successMessage: String?) {
@@ -92,8 +95,11 @@ extension FeatureCoordinator {
 
     // MARK: - 2. Gatekeeper  (admin)
 
-    /// ON == **bypassed**. The inverted semantics are deliberate: the switch shows what
-    /// has actually been disabled rather than a vague "on".
+    /// The public setter for feature 2. `bypassed` is the **direction**, not the row: pass
+    /// `false` to enforce (`spctl --master-enable`) and `true` to bypass
+    /// (`spctl --master-disable`). The row itself displays the opposite — Phase 11.4 made
+    /// the toggle ON == enforce, so the switch reads as "is Gatekeeper protecting this
+    /// Mac?" rather than "has something been turned off?".
     ///
     /// ## macOS 15+ is a two-step procedure
     ///
@@ -103,41 +109,69 @@ extension FeatureCoordinator {
     /// then hands the confirmation to the UI, which opens the pane and explains the step
     /// (`GatekeeperPolicy`). Re-enabling (`--master-enable`) is one step everywhere and
     /// never triggers the confirmation.
+    ///
+    /// On a version where the second step is outstanding the success copy is
+    /// `GatekeeperPolicy.pendingMessage`, never "now bypassed": the app must not claim a
+    /// completion the user has not performed yet. They click Anywhere; the re-read that
+    /// follows says when it is done.
     func setGatekeeper(bypassed: Bool) {
         // Not `runImmediately`: `writeGatekeeper` owns the macOS 15+ System Settings
         // follow-up, which must run after the command succeeds and never after a failure.
         perform(.gatekeeper,
-                successMessage: bypassed
-                    ? "Gatekeeper is now bypassed. Re-enable it when you no longer need it."
-                    : "Gatekeeper is active again.",
+                successMessage: gatekeeperSuccessMessage(bypassed: bypassed),
                 work: { [weak self] in
                     self?.writeGatekeeper(bypassed: bypassed)
                         ?? .failure(message: "App is shutting down.", exitCode: -1)
                 })
     }
 
-    /// The single write path for feature 2, shared by the switch, the menu and the URL
-    /// scheme so the macOS 15+ follow-up can never be skipped on one of them.
+    /// Success copy for a Gatekeeper write, in the direction and the version rule.
+    ///
+    /// The bypass direction on a version that still needs the System Settings step gets
+    /// `GatekeeperPolicy.pendingMessage` — "ยังไม่ถูกปิด" — instead of
+    /// `GatekeeperPolicy.confirmedMessage`: the app must not claim a completion the human
+    /// has not performed yet. They click **Anywhere**; the re-read that follows says when
+    /// it is done. Enabling is one step everywhere, so it always gets its plain message.
+    private func gatekeeperSuccessMessage(bypassed: Bool) -> String? {
+        guard bypassed else { return "Gatekeeper is active again." }
+        return SystemCommands.gatekeeperDisableRequiresSystemSettingsConfirmation()
+            ? GatekeeperPolicy.pendingMessage
+            : GatekeeperPolicy.confirmedMessage
+    }
+
+    /// The single write path for feature 2, shared by the switch and the menu
+    /// so the macOS 15+ follow-up can never be skipped on one of them.
     ///
     /// Runs on the coordinator's serial queue (inside `perform`). The user-facing
     /// follow-up is dispatched to the main thread through `publish`, never called inline.
     private func writeGatekeeper(bypassed: Bool) -> CommandOutcome {
+        // One mapping, both directions — see `SystemCommands.gatekeeperShell(enabling:)`.
         let outcome = SystemCommands.runAsAdmin(
-            "\(Tool.spctl) --master-\(bypassed ? "disable" : "enable")")
+            SystemCommands.gatekeeperShell(enabling: !bypassed))
 
         // Only after a successful *disable* on macOS 15+ does System Settings need the
         // user's hand. A failed command must not open System Settings: the failure
         // message and a "go pick Anywhere" instruction would contradict each other.
-        // (5) Same instrumentation as the batch route: the hook's presence and whether it
-        // fired. These two call sites are the only places the follow-up can be raised, and a
+        //
+        // Phase 11.4 added the third gate: the **fresh, exit-agnostic read** must agree
+        // that the machine is actually bypassed. Before TASK 1 this read returned `nil`
+        // whenever `spctl --status` exited non-zero — on an already-bypassed Mac the
+        // stdout said `assessments disabled` while the exit code said 1 — which silently
+        // suppressed the mandatory confirmation. `parsed == true` is the truth the flow
+        // is gated on; `nil` and `false` both mean "do not tell the user it is done".
+        let parsedBypassed = SystemStateReader.isGatekeeperBypassed()
+        // (5) Same instrumentation as the batch route: the hook's presence and each gate.
+        // These two call sites are the only places the follow-up can be raised, and a
         // difference between them is exactly what the log is here to reveal.
         Trace.batch("writeGatekeeper: outcome=\(outcome.isSuccess ? "success" : "not-success")"
                     + " bypassed=\(bypassed)"
                     + " versionGate=\(SystemCommands.gatekeeperDisableRequiresSystemSettingsConfirmation())"
+                    + " parsedBypassed=\(parsedBypassed.map(String.init) ?? "nil")"
                     + " hookInstalled=\(onGatekeeperNeedsConfirmation != nil)")
         if case .success = outcome,
            bypassed,
-           SystemCommands.gatekeeperDisableRequiresSystemSettingsConfirmation() {
+           SystemCommands.gatekeeperDisableRequiresSystemSettingsConfirmation(),
+           parsedBypassed == true {
             Trace.batch("writeGatekeeper: FIRING onGatekeeperNeedsConfirmation (immediate route)")
             publish { $0.onGatekeeperNeedsConfirmation?() }
         } else {
@@ -158,16 +192,30 @@ extension FeatureCoordinator {
     ///
     /// The immediate route still goes through the shared command table, so the menu-bar item
     /// and a queued batch write byte-identical commands.
+    ///
+    /// Success is published **from the outcome**, not from a constant: when the ordered
+    /// Finder refresh chain is exhausted, `SystemCommands` returns the Thai+English note
+    /// (`finderRefreshFailedNote`) as the success output and that — not the generic line —
+    /// is what the user needs to read. Hence `successMessage: nil`: `finish` must not
+    /// overwrite the note with a second, blander message.
     func setHiddenFiles(shown: Bool) {
         perform(.hiddenFiles,
-                successMessage: shown
-                    ? "Hidden files are now visible in Finder."
-                    : "Hidden files are now hidden.",
+                successMessage: nil,
                 work: { [weak self] in
                     guard let command = self?.command(for: .hiddenFiles, pending: .toggle(shown)) else {
                         return .failure(message: "Could not build the hidden-files command.", exitCode: -1)
                     }
-                    return FeatureCoordinator.run(command)
+                    let outcome = FeatureCoordinator.run(command)
+                    if case .success(let output) = outcome {
+                        self?.report(
+                            output.isEmpty
+                                ? (shown
+                                    ? "Hidden files are now visible in Finder."
+                                    : "Hidden files are now hidden.")
+                                : output,
+                            style: .success)
+                    }
+                    return outcome
                 })
     }
 
@@ -208,57 +256,48 @@ extension FeatureCoordinator {
                        successMessage: enabled ? "Auto boot is enabled." : "Auto boot is disabled.")
     }
 
-    // MARK: - Toggles used by the URL scheme and the menu-bar menu
+    // MARK: - Toggles used by the menu-bar menu
     //
     // These read the current state and write its opposite. The read has to happen
     // *inside* the locked operation, not before it: doing the read in a separate
     // `queue.async` and then calling `perform` would leave a window in which another
     // operation could change the same feature, and the toggle would then write a stale
     // opposite value.
-
-    /// Flips Gatekeeper to the opposite of whatever is currently configured.
-    func toggleGatekeeper() {
-        perform(.gatekeeper,
-                successMessage: nil, // the real message depends on the direction
-                work: { [weak self] in
-                    guard let self = self else { return .failure(message: "App is shutting down.", exitCode: -1) }
-                    let currentlyBypassed = SystemStateReader.isGatekeeperBypassed()
-                    let target = (currentlyBypassed ?? false) == false
-                    // `report(_:style:)` rather than assigning `statusMessage` directly:
-                    // the property is `private(set)`, and that setter is scoped to
-                    // FeatureCoordinator.swift, so this file — a separate file — could
-                    // not assign it even though it is the same type.
-                    self.report(
-                        target
-                            ? "Gatekeeper is now bypassed. Re-enable it when you no longer need it."
-                            : "Gatekeeper is active again.",
-                        style: .success)
-                    // Shared with `setGatekeeper`, so the macOS 15+ System Settings step
-                    // also runs for the menu-bar click and the URL action.
-                    return self.writeGatekeeper(bypassed: target)
-                })
-    }
+    //
+    // `toggleGatekeeper()` lived here until Phase 11.4 and had exactly one caller — the
+    // removed URL-scheme router — so it left with it. The Gatekeeper row is staged like
+    // every other panel row, and its one-shot immediate direction is `setGatekeeper`.
 
     /// Flips hidden-file visibility in Finder.
     ///
     /// Shared with `setHiddenFiles(shown:)` through the command table, so the menu-bar item
-    /// and a queued batch write byte-identical commands.
+    /// and a queued batch write byte-identical commands. Success is published from the
+    /// outcome for the same reason as `setHiddenFiles(shown:)`: the Finder refresh note
+    /// replaces the generic message when the chain is exhausted.
     func toggleHiddenFiles() {
         perform(.hiddenFiles,
                 successMessage: nil,
                 work: { [weak self] in
                     guard let self = self else { return .failure(message: "App is shutting down.", exitCode: -1) }
                     let target = SystemStateReader.areHiddenFilesShown() == false
-                    // See `toggleGatekeeper()` for why this goes through `report`.
-                    self.report(
-                        target
-                            ? "Hidden files are now visible in Finder."
-                            : "Hidden files are now hidden.",
-                        style: .success)
                     guard let command = self.command(for: .hiddenFiles, pending: .toggle(target)) else {
                         return .failure(message: "Could not build the hidden-files command.", exitCode: -1)
                     }
-                    return FeatureCoordinator.run(command)
+                    let outcome = FeatureCoordinator.run(command)
+                    if case .success(let output) = outcome {
+                        // `report(_:style:)` rather than assigning `statusMessage` directly:
+                        // the property is `private(set)`, and that setter is scoped to
+                        // FeatureCoordinator.swift, so this file — a separate file — could
+                        // not assign it even though it is the same type.
+                        self.report(
+                            output.isEmpty
+                                ? (target
+                                    ? "Hidden files are now visible in Finder."
+                                    : "Hidden files are now hidden.")
+                                : output,
+                            style: .success)
+                    }
+                    return outcome
                 })
     }
 

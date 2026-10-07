@@ -15,7 +15,8 @@ import Foundation
 enum PendingChange: Equatable {
 
     /// A toggle was flipped. The payload is the value the user wants, in the row's own
-    /// inverted semantics where applicable (Gatekeeper: `true` == bypassed).
+    /// semantics (Gatekeeper since Phase 11.4: `true` == **enforcing**, i.e. the switch ON;
+    /// Hidden Files: `true` == shown; the rest: `true` == the feature enabled).
     case toggle(Bool)
 
     /// A one-shot action button was pressed (Rosetta 2, Spotlight, DNS Flush, Clear Cache).

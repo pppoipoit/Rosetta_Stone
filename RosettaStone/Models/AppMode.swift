@@ -6,16 +6,15 @@ import Foundation
 ///
 /// - Launches as an ordinary windowed app: the panel is shown, the Dock icon is visible.
 /// - **No menu-bar icon** and nothing is kept alive in the background.
-/// - URL-scheme actions are refused: the menu-bar gadget is what makes them reachable.
 ///
 /// ## Mode B — `menuBarGadget` (Run at Startup ON; power-user mode)
 ///
 /// - Launches **hidden**: no window at launch and no Dock icon
 ///   (`NSApp.setActivationPolicy(.accessory)`).
 /// - The menu-bar icon is always present.
-/// - **Left-click the icon toggles Gatekeeper directly** — no dropdown, no window.
+/// - **Left-click the icon opens the mini panel** — the three switches people reach for,
+///   staged and committed exactly like the main panel.
 /// - **Right-click the icon opens the full menu** (Open Main Window, Diagnostics…, Quit).
-/// - All seven `rosettastone://` actions work, including cold starts.
 /// - Switching the toggle OFF removes the login item, removes the icon and returns the
 ///   process to `normal` — see `AppDelegate.apply(_:)`.
 ///

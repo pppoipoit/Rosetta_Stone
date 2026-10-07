@@ -6,7 +6,7 @@ those flows possible on a macOS 10.15 deployment floor.
 
 > **Type names below are the real ones.** The implementation is in `RosettaStone/`; the tables and
 > diagrams name the actual Swift types — `SystemCommands`, `FeatureCoordinator`, `MenuBarController`,
-> `CPUArchitecture`, `StartupManager`, `SystemStateReader`, `URLActionRouter`, `AppMode`,
+> `CPUArchitecture`, `StartupManager`, `SystemStateReader`, `AppMode`,
 > `GatekeeperPolicy`, `Trace` — not the scaffolding-era placeholders.
 
 ---
@@ -24,10 +24,10 @@ Rosetta Stone is one app process with two user-facing surfaces:
 
 The **Run at Startup** toggle is the app's posture switch (`Models/AppMode.swift`):
 
-| Mode | Trigger | Window at launch | Dock icon | Menu-bar icon | URL actions |
-|------|---------|------------------|-----------|---------------|-------------|
-| **A — normal app** (default) | No LaunchAgent plist and no `--menu-bar-only` | Shown | Yes (`.regular`) | None | Refused |
-| **B — menu-bar gadget** | LaunchAgent plist exists, or `--menu-bar-only` | Hidden | No (`.accessory`) | Always | All seven work |
+| Mode | Trigger | Window at launch | Dock icon | Menu-bar icon |
+|------|---------|------------------|-----------|---------------|
+| **A — normal app** (default) | No LaunchAgent plist and no `--menu-bar-only` | Shown | Yes (`.regular`) | None |
+| **B — menu-bar gadget** | LaunchAgent plist exists, or `--menu-bar-only` | Hidden | No (`.accessory`) | Always |
 
 The mode is re-derived from `FeatureCoordinator.runAtStartup` after every operation, so
 `AppDelegate.apply(_:)` flips the running process between the two postures with **no relaunch**:
@@ -54,10 +54,9 @@ it, because in mode B that process was started by the LaunchAgent (§2).
 
 | Gesture | Result |
 |---------|--------|
-| **Left-click** the status item | **Toggle Gatekeeper directly** — no dropdown, no window; the macOS password prompt is the only interruption, and a toast (`StatusItemToast`) reports the outcome |
+| **Left-click** the status item | **Open the mini panel** — three switches (Gatekeeper, Hidden Files, Run at Startup) with OK / CANCEL, staged exactly like the main panel |
 | **Right-click / Control-click** the status item | The full menu: Open Main Window, Toggle Hidden Files, Flush DNS, Rebuild Spotlight, Clear System Cache… (confirmed), Diagnostics… (⌘D), Quit (⌘Q) |
 | Dock icon / reopen (mode A) | `applicationShouldHandleReopen` shows the panel |
-| `rosettastone://…` (mode B) | Routed to the coordinator — §3 |
 | Window close (either mode) | The process keeps running; `applicationShouldTerminateAfterLastWindowClosed` is `false` |
 
 ### Process diagram
@@ -85,7 +84,6 @@ graph TB
     end
 
     Login["launchd (user session)"] -->|LaunchAgent| App
-    URL["rosettastone:// action"] -->|Launch Services| App
     Priv -->|do shell script with administrator privileges| Auth["macOS Authorization prompt"]
     Auth -->|root shell| Runner
     Runner -->|stdout / stderr / exit status| Coord
@@ -99,8 +97,8 @@ optimisation — it is a correctness requirement:
 - Two simultaneous `osascript` elevation prompts would fight for focus and could leave the
   authorization database in a confusing state.
 - Read-modify-write sequences (read `nvram AutoBoot`, then write a new value) must not interleave.
-- A single actor also makes the URL-scheme path and the UI path trivially safe: both funnel into
-  the same serialised coordinator.
+- A single actor also keeps the menu-bar immediate path and the UI path trivially safe:
+  both funnel into the same serialised coordinator.
 
 Long-running commands (Rosetta install, Spotlight rebuild) execute on a background queue and
 publish progress back to the main actor; the UI shows a spinner but remains responsive.
@@ -135,7 +133,7 @@ status-bar items. A daemon would run in a non-GUI context and could not.
 3. Otherwise → mode A.
 
 There is no separate "interactive launch" posture any more: the panel is shown on demand in both
-modes (`Open Main Window`, `rosettastone://open-app`, or a reopen event), and a mode B launch
+modes (`Open Main Window` or a reopen event), and a mode B launch
 never shows a window as a side effect. A plist written by an older build lacks the flag but still
 resolves to mode B through its existence; **Diagnostics…** flags it as an older-build item.
 
@@ -224,7 +222,7 @@ sequenceDiagram
     AP->>AP: read all feature states (unprivileged reads)
     AP->>ST: install status item
     Note over AP,W: Mode B launch — NO window is shown.<br/>The app waits silently in the menu bar.
-    U->>ST: LEFT-click the status item (toggle Gatekeeper)
+    U->>ST: LEFT-click the status item (opens the mini panel)
     ST->>U: macOS Authorization prompt (admin) + toast
     U->>ST: RIGHT-click the status item
     ST->>AP: presentMenu()
@@ -234,109 +232,23 @@ sequenceDiagram
 
 ---
 
-## 3. URL-scheme handling flow
+## 3. External triggers — **removed (Phase 11.4)**
 
-Rosetta Stone registers the custom scheme `rosettastone` via `CFBundleURLTypes` in `Info.plist`.
-A custom URL scheme is used **instead of App Intents**, which requires macOS 13+ and would break
-the 10.15 deployment floor (see [DECISIONS.md](DECISIONS.md#adr-002)).
+This section used to register a custom URL scheme and list seven actions with a mode
+gate, a cold-start queue (`pendingURLs`, ceiling 10, `drainPendingURLs()`), a routing
+flow (`URLActionRouter.route`), a single-instance guarantee and URL parsing notes.
 
-### Registered actions
+All of it was removed by owner decision. The current truth:
 
-| Action string | Full URL | Maps to | Elevation |
-|---------------|----------|---------|-----------|
-| `open-app` | `rosettastone://open-app` | Show + focus the main window | No |
-| `toggle-gatekeeper` | `rosettastone://toggle-gatekeeper` | Feature 2 | **Yes** (admin) |
-| `toggle-hidden-files` | `rosettastone://toggle-hidden-files` | Feature 3 | No |
-| `flush-dns` | `rosettastone://flush-dns` | Feature 7 | **Yes** (admin) |
-| `rebuild-spotlight` | `rosettastone://rebuild-spotlight` | Feature 6 | **Yes** (admin) |
-| `clear-cache` | `rosettastone://clear-cache` | Feature 8 | **Yes** (admin) |
-| `install-rosetta` | `rosettastone://install-rosetta` | Feature 5 | **Yes** (admin) |
-
-There is deliberately **no** URL action for `run-at-startup` or `auto-boot`: both change boot and
-login behaviour, and exposing them to an untrusted URL caller without an in-app confirmation
-would be unsafe. Feature 8 (`clear-cache`) *is* exposed but retains its confirmation dialog even
-when URL-driven.
-
-### Mode gate
-
-URL actions are part of **mode B**. In mode A (Run at Startup OFF) the app is not running in the
-background; a URL that arrives anyway is refused, the panel is shown, and the footer explains
-that URL actions require Run at Startup ON. Nothing is silently performed, and unknown/malformed
-URLs still raise nothing at all.
-
-### Cold-start queue
-
-URLs that arrive before the presenter exists are held in a plain array — `pendingURLs`, ceiling
-**10** entries, oldest dropped (`AppDelegate.enqueue(_:)`). It is drained exactly once, by
-`drainPendingURLs()`, after `applicationDidFinishLaunching` has built the controller. There is no
-re-dispatch and no `DispatchQueue.main.async` hop on that path, which is what makes both failure
-modes impossible: a URL that can be lost, and a drain that can re-enter itself.
-
-### Flow
-
-```mermaid
-sequenceDiagram
-    autonumber
-    participant C as Caller (Shortcuts / shell)
-    participant LS as Launch Services
-    participant AD as AppDelegate
-    participant H as URLActionRouter
-    participant C2 as FeatureCoordinator
-    participant U as User
-
-    C->>LS: open "rosettastone://flush-dns"
-    alt Mode A (Run at Startup OFF)
-        LS->>AD: launch/activate + deliver URL
-        AD-->>U: refused — panel opens with a footer explanation
-        Note over AD: No privileged action is ever started from a URL in mode A.
-    else Mode B, app already running (background posture)
-        LS->>AD: application(_:open: URLs:) — same process, no relaunch
-    else Mode B, app not running
-        LS->>AD: launch + deliver URL (no window shown)
-    end
-    AD->>H: route(URL)
-    H->>H: validate scheme + host against the action table
-    alt Unknown or malformed action
-        H-->>C: log warning and discard
-    else CPU-gated action on unsupported CPU
-        H-->>U: log "action unavailable on this CPU" and discard
-    else Valid action
-        alt Destructive action (clear-cache)
-            H->>U: confirmation dialog
-            U-->>H: cancel
-            H-->>C: discarded
-        else Confirmed or non-destructive
-            H->>C2: enqueue on the serial queue
-            C2->>U: macOS Authorization prompt (admin)
-            U-->>C2: credentials
-            C2-->>H: success or failure
-        end
-    end
-```
-
-### Single-instance guarantee
-
-In mode B the app has no Dock icon, so the usual "click the Dock icon to focus an existing
-instance" affordance does not exist; the URL-scheme handler is therefore also the app's
-**activation** path. In mode A the Dock icon exists and `applicationShouldHandleReopen` owns
-reactivation. Three rules follow:
-
-1. Never `terminate`-and-relaunch to handle a URL. Deliver it to the running instance.
-2. On a cold start triggered by a URL in mode B, do **not** show the window as a side effect —
-   the caller asked for an *action*, not for a window. Only `rosettastone://open-app` (or a
-   click/activation of the app) shows the panel.
-3. The LaunchAgent install never bootstraps the job, precisely so a mode-B install cannot spawn
-   a second instance on the spot (§2).
-
-### URL parsing notes
-
-- The action is the URL **host** component: `rosettastone://flush-dns` → host = `flush-dns`.
-- Query and path components are ignored; `rosettastone://flush-dns?force=1` resolves to the same
-  action, with `force` discarded rather than honoured.
-- Matching is **case-insensitive** (`FLUSH-DNS` works) but never prefix-matched —
-  `rosettastone://flush-dns-extra` must be rejected as unknown.
-- Unknown actions must not raise a user-facing error. A shortcut that fires at 3 a.m. should never
-  produce an alert the user did not ask for.
+- There is **no external trigger surface**. No URL scheme is registered, no queue exists,
+  `AppDelegate` implements no `application(_:open:)`. (The proof grep for the removed
+  scheme host — spelled `rosettastone` + `://` here so this file stays clean — finds zero
+  hits outside `CHANGELOG.md`.)
+- The single-instance guarantee needs no URL machinery any more: the LaunchAgent never
+  bootstraps the job (§2), so a mode-B install cannot spawn a second instance, and a
+  manual double-click while the toggle is ON opens the normal app by design.
+- The panel is shown on demand: `Open Main Window` in the menu, or a Dock / reopen
+  activation. A mode-B launch never shows a window as a side effect.
 
 ---
 
@@ -628,10 +540,10 @@ flowchart TD
 
 | Path | Responsibility |
 |------|----------------|
-| `RosettaStone/App/` | `main.swift` (both entry points), `RosettaStoneApp`, `AppDelegate` — mode resolution, URL-scheme entry, reopen handling, live mode switching |
+| `RosettaStone/App/` | `main.swift` (both entry points), `RosettaStoneApp`, `AppDelegate` — mode resolution, reopen handling, live mode switching, truth-first resync on launch / didBecomeActive / didBecomeKey |
 | `RosettaStone/Models/` | `FeatureID` + `FeatureAvailability` (row copy, hardware gating on `MacProfile`, clear-cache warning), `AppMode`, `CommandResult` / `ProcessResult`, `DeferredChange` (`PendingChange`, `FeatureCommand`, `BatchItemResult`, `BatchReport`) |
-| `RosettaStone/Services/` | `SystemCommands` (the only place that spawns processes or elevates, plus the Gatekeeper version rule and `runBatched`), `FeatureCoordinator` (+ `FeatureCoordinator+Actions`, + the deferred queue), `StartupManager`, `SystemStateReader`, `CPUArchitecture`, `MacProfile` (model name + form factor, ADR-008), `URLActionRouter`, `GatekeeperPolicy`, `Trace` |
-| `RosettaStone/Views/Main/` | `ContentView` (toggle rows in owner order, pending dots on the switches, Rosetta row, Quick Tools grid, footer, OK/CANCEL bar, batch report sheet), `Components` (`PillSwitch`, `PendingPillSwitch`, `PendingDot`, `GatekeeperStatusDot`, `ApplyBar`, `TooltipHost`, `StatusBanner`, `LockIcon`, the button styles), `Theme` (colours **plus the unified style registry every control resolves through**) |
+| `RosettaStone/Services/` | `SystemCommands` (the only place that spawns processes or elevates, plus the Gatekeeper version rule, the Gatekeeper command table and `runBatched`), `FeatureCoordinator` (+ `FeatureCoordinator+Actions`, + the deferred queue), `StartupManager`, `SystemStateReader` (exit-code-agnostic spctl / hidden-files / nvram readers), `CPUArchitecture`, `MacProfile` (model name + form factor, ADR-008), `GatekeeperPolicy`, `Trace` |
+| `RosettaStone/Views/Main/` | `ContentView` (toggle rows in owner order, pending dots on the switches, Gatekeeper unknown tooltip, Rosetta row, Quick Tools grid, footer, OK/CANCEL bar, batch report sheet), `Components` (`PillSwitch`, `PendingPillSwitch`, `PendingDot`, `ApplyBar`, `TooltipHost`, `StatusBanner`, `LockIcon`, the button styles), `Theme` (colours **plus the unified style registry every control resolves through**) |
 | `RosettaStone/Views/MenuBar/` | `MenuBarController` (status item, dropdown menu, main panel window, mini panel), `MiniAppView` (the mini panel's contents — its own deferred queue), `StatusItemToast`, `DiagnosticsPanel` |
 | `RosettaStone/Resources/` | `AppIcon.png` — the 1024×1024 master icon, and `Assets.xcassets` (`StatusBarIcon` only) |
 | `RosettaStone/Support/` | `Info.plist`, `RosettaStone.entitlements`, `AppIcon.appiconset` |
@@ -657,10 +569,16 @@ Rules that keep the two from bleeding into each other:
    *removes* the entry, so a switch flipped on and back off leaves nothing behind.
 3. **Actual state is always re-read after a write** — including after a batch. This is what
    makes the switches show reality rather than what the command claimed.
-4. **Only `FeatureCoordinator` may write to actual state**; only four methods in each consumer
+4. **Actual state is re-read on resync triggers** (Phase 11.4, `FeatureCoordinator.loadState`
+   with its `reason` label): (1) launch, (2) `NSApplication.didBecomeActive`, (3) any of
+   this app's windows becoming key, (4) every Apply (batch or single), (5) every CANCEL.
+   The `spctl --status` read feeding those values is **exit-code agnostic**
+   (`SystemStateReader.parseSpctlStatus(stdout:)`): stdout parses whatever the exit status
+   was, so "already bypassed, exit 1" is truth, not `nil`.
+5. **Only `FeatureCoordinator` may write to actual state**; only four methods in each consumer
    mutate its queue (`stageToggle`, `stageAction`, the completion handler of
    `applyPendingChanges`, and `cancelPendingChanges`).
-5. **A completed batch empties the queue unconditionally** (Phase 11). The one exception is a
+6. **A completed batch empties the queue unconditionally** (Phase 11). The one exception is a
    dismissed Authorization dialog — "not now", not a result — which keeps the queue so **OK** can
    simply be pressed again. **CANCEL** clears it and calls `loadState()`.
 
@@ -695,12 +613,12 @@ desired value into a command. Both routes go through it:
 | Route | Path |
 |-------|------|
 | Panel (queued) | `pendingChanges` → `command(for:pending:)` → `SystemCommands.runBatched` |
-| Panel (immediate) | `runImmediately(_:pending:)` → same table → `runAsAdmin` / `runShell` |
-| Menu bar, URL scheme | `toggleGatekeeper()`, `flushDNS()`, … → `runImmediately(_:pending:)` |
+| Menu-bar menu (immediate) | `toggleHiddenFiles()`, `flushDNS()`, … → `runImmediately(_:pending:)` → same table → `runAsAdmin` / `runShell` |
 
-Because `Tool` (the table of binary paths) is also shared, the queued route and the immediate route
+Because `SystemCommands` owns the Gatekeeper binary path and the ON/OFF→command mapping
+(`spctlTool`, `gatekeeperShell(enabling:)`), the queued route and the immediate route
 cannot drift to different commands — which is the failure mode that would leave the panel promising
-something the shortcuts do not actually do.
+something the other route does not actually do.
 
 ### App icon pipeline
 

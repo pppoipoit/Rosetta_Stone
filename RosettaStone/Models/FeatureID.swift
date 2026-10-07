@@ -2,8 +2,9 @@ import Foundation
 
 /// The eight capabilities defined in `docs/FEATURES.md`, in their fixed row order.
 ///
-/// `rawValue` doubles as the URL-scheme host for the actions that are exposed
-/// (`rosettastone://toggle-gatekeeper` → `.gatekeeper`), so the two tables cannot drift.
+/// `rawValue` doubles as the **batch marker** each row writes to stdout inside the
+/// elevated batch script (`toggle-gatekeeper`, `install-rosetta`, …), so the parser can
+/// only ever match a result to the row that produced it — exact match, never a prefix.
 enum FeatureID: String, CaseIterable {
     case runAtStartup       = "run-at-startup"
     case gatekeeper         = "toggle-gatekeeper"
@@ -69,8 +70,8 @@ struct FeatureAvailability {
 
 extension FeatureID {
 
-    /// The warning shown in **every** Clear System Cache confirmation — the panel sheet,
-    /// the status-item menu and the URL-scheme confirmation.
+    /// The warning shown in **every** Clear System Cache confirmation — the panel sheet
+    /// and the status-item menu.
     ///
     /// One constant for all three so they can never drift: `rm -rf /Library/Caches/*` is
     /// the highest-risk action in the app, and the consequence has to be stated before the
@@ -83,13 +84,14 @@ extension FeatureID {
     /// One-line explanation shown under the row title.
     ///
     /// **Every toggle carries one.** A switch with no explanation makes the user guess what
-    /// ON actually does — and on the two *inverted* rows (Gatekeeper, Hidden Files) guessing
-    /// wrong means lowering a security setting. `description` is the canonical name; `detail`
+    /// ON actually does — and on the row where guessing wrong means lowering a security
+    /// setting (Gatekeeper) or diverging from the system default (Hidden Files) the guess
+    /// is expensive. `description` is the canonical name; `detail`
     /// is a retained alias so existing call sites keep working against the same table.
     var description: String {
         switch self {
         case .runAtStartup:     return "ON switches to menu-bar gadget mode and starts it at every login."
-        case .gatekeeper:       return "ON means Gatekeeper is bypassed (macOS 15+ confirms in System Settings)."
+        case .gatekeeper:       return "ON means macOS enforces Gatekeeper; OFF lets any app run (macOS 15+ confirms the OFF direction in System Settings)."
         case .hiddenFiles:      return "ON means dotfiles are visible in Finder. Updates open windows."
         case .autoBoot:         return "Power on automatically when power is restored."
         case .rosetta2:         return "Install Apple’s translation layer for Intel-only software."
@@ -104,10 +106,10 @@ extension FeatureID {
 
     /// The order the **panel** draws its rows in (owner-specified, Phase 11).
     ///
-    /// Deliberately separate from `FeatureID.allCases`, which is the *URL-scheme* table and
-    /// the order a deferred batch is committed in. Those two orders answer different
-    /// questions — "what the user sees" versus "what the router resolves" — and pinning the
-    /// display order to the routing order would make a cosmetic change a behaviour change.
+    /// Deliberately separate from `FeatureID.allCases`, which is the batch-commit order
+    /// (the order the deferred batch is committed in). The two orders answer different
+    /// questions — "what the user sees" versus "what the batch commits first" — and pinning
+    /// the display order to the commit order would make a cosmetic change a behaviour change.
     ///
     /// The order itself: Gatekeeper and Hidden Files first (the two people reach for
     /// constantly), then the two posture rows, then Rosetta, then Quick Tools.

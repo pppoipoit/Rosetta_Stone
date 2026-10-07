@@ -54,22 +54,6 @@
 	<key>NSSupportsAutomaticGraphicsSwitching</key>
 	<true/>
 
-	<!-- ==== Custom URL scheme: rosettastone://action ==== -->
-	<!-- Replaces App Intents, which requires macOS 13+. -->
-	<key>CFBundleURLTypes</key>
-	<array>
-		<dict>
-			<key>CFBundleURLName</key>
-			<string>com.rosettastone.app.scheme</string>
-			<key>CFBundleTypeRole</key>
-			<string>Editor</string>
-			<key>CFBundleURLSchemes</key>
-			<array>
-				<string>rosettastone</string>
-			</array>
-		</dict>
-	</array>
-
 	<!-- ==== Usage strings surfaced by macOS when commands are spawned ==== -->
 	<key>NSAppleEventsUsageDescription</key>
 	<string>Rosetta Stone uses Apple Events to control Gatekeeper and Finder, and to prompt for administrator credentials.</string>

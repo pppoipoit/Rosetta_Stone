@@ -8,7 +8,7 @@ import Darwin
 /// reappears at every login.
 ///
 /// This is also the **mode switch of the whole app**: ON makes Rosetta Stone a menu-bar
-/// gadget (hidden launch, no Dock icon, URL actions live), OFF returns it to an ordinary
+/// gadget (hidden launch, no Dock icon), OFF returns it to an ordinary
 /// windowed app. `AppMode` and `AppDelegate.apply(_:)` carry the runtime half of that
 /// switch; this type owns only the file on disk, which is the source of truth the toggle
 /// is derived from.

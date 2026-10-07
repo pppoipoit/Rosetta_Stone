@@ -19,32 +19,58 @@ enum SystemStateReader {
 
     /// `spctl --status` → "assessments disabled" means Gatekeeper is bypassed.
     ///
-    /// Returns `nil` when the status could not be read — an unknown is never reported as
-    /// OFF, which would misrepresent a managed machine as a protected one.
+    /// ## The exit code never gates parsing (Phase 11.4)
+    ///
+    /// Owner evidence (Intel MacBookPro14,1, macOS 14.7.4): `spctl --status` printed
+    /// `assessments disabled` **and exited 1** on an already-bypassed machine. The old
+    /// reader did `guard value.isSuccess else { return nil }`, so the stdout was captured
+    /// and then thrown away: the UI saw `nil`, the baseline for every staged decision was
+    /// "unknown" instead of truth, and the macOS 15+ confirmation gate — which requires a
+    /// parsed `true` — was silently suppressed. Parsing is therefore driven by the text
+    /// only; the exit code is logged for diagnostics and otherwise ignored.
+    ///
+    /// Returns `nil` only when the command could not be launched or the output was
+    /// unrecognised — an unknown is never reported as OFF, which would misrepresent a
+    /// managed machine as a protected one.
     static func isGatekeeperBypassed() -> Bool? {
         // Captured **once**, then logged. Running the command twice here would be harmless but
         // it would double every state read for no gain — the raw output of the single run is
         // all the diagnostics need.
         let result = try? SystemCommands.run(Tool.spctl, ["--status"])
-        // (4) The **raw** spctl output. The derived Bool below only says "enabled"/"disabled";
-        // this line says what spctl actually printed, which is what distinguishes a genuinely
-        // protected Mac from one where spctl failed, printed something unrecognised, or is
-        // governed by an MDM profile.
+        // (4) The **raw** spctl output *and* the value parsed from it. The derived Bool only
+        // says "enabled"/"disabled"; the raw line says what spctl actually printed, which is
+        // what distinguishes a genuinely protected Mac from one where spctl printed something
+        // unrecognised or is governed by an MDM profile.
         switch result {
         case .none:
             Trace.batch("read: spctl --status — the command could not be launched (nil)")
             return nil
         case .some(let value):
+            // NOTE: no `guard value.isSuccess`. See the doc comment — exit 1 with
+            // "assessments disabled" is the observed truth on 14.7.4 and must parse.
+            let parsed = parseSpctlStatus(stdout: value.standardOutput)
             Trace.batch("read: spctl --status exit=\(value.exitCode)"
                         + " raw=[\(Trace.escaped(value.standardOutput))]"
-                        + " stderr=[\(Trace.escaped(value.standardError))]")
-            guard value.isSuccess else { return nil }
-            let output = value.standardOutput.lowercased()
-            if output.contains("assessments disabled") { return true }
-            if output.contains("assessments enabled") { return false }
-            Trace.batch("read: spctl --status — recognised neither 'assessments enabled' nor 'assessments disabled'")
-            return nil
+                        + " stderr=[\(Trace.escaped(value.standardError))]"
+                        + " parsed=\(parsed.map(String.init) ?? "nil")")
+            return parsed
         }
+    }
+
+    /// Parses `spctl --status` stdout into the bypassed flag. **Exit-code agnostic.**
+    ///
+    /// - "assessments disabled" → `true` (Gatekeeper is bypassed)
+    /// - "assessments enabled"  → `false` (Gatekeeper is enforcing)
+    /// - anything else (garbage, empty output) → `nil` (unknown)
+    ///
+    /// Deliberately a pure function of the text with no `exitCode` parameter: the
+    /// signature *is* the contract. `tests/MacProfileTests.swift` copies it verbatim and
+    /// asserts both strings across exit 0 and exit 1, plus garbage and empty output.
+    static func parseSpctlStatus(stdout: String) -> Bool? {
+        let output = stdout.lowercased()
+        if output.contains("assessments disabled") { return true }
+        if output.contains("assessments enabled") { return false }
+        return nil
     }
 
     /// `defaults read com.apple.finder AppleShowAllFiles` → 1 = shown, 0 = hidden.

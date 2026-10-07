@@ -93,7 +93,7 @@ targets:
         # CI both depend on this staying "RosettaStone" inside "RosettaStone.app".
         EXECUTABLE_NAME: RosettaStone
         INFOPLIST_FILE: RosettaStone/Support/Info.plist
-        # A hand-written Info.plist is used (LSUIElement, CFBundleURLTypes), so
+        # A hand-written Info.plist is used (LSUIElement), so
         # Xcode must not synthesise one.
         GENERATE_INFOPLIST_FILE: NO
         CURRENT_PROJECT_VERSION: "1"

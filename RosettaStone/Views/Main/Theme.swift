@@ -140,61 +140,6 @@ struct PillSwitchPalette {
     func caption(isOn: Bool) -> Color { .white }
 }
 
-/// A small always-visible indicator of whether Gatekeeper is currently doing its job.
-///
-/// ## Three states, never two
-///
-/// The dot takes a `Bool?`, and `nil` — "the status could not be read" — gets its own
-/// **grey**, deliberately *not* the green used for "active". A two-state indicator would have
-/// to render an unreadable status as either safe or unsafe, and both are lies: a managed Mac
-/// whose policy blocks `spctl --status` is neither protected nor known-unprotected as far as
-/// this app can tell. Grey says "ask the system yourself", which is the truth.
-///
-/// Drawn as shapes rather than SF Symbols (`Image(systemName:)` is macOS 11+) to keep the
-/// 10.15 floor, the same rule every other icon in this app follows.
-struct GatekeeperStatusDot: View {
-
-    /// `true` = bypassed, `false` = active, `nil` = unreadable.
-    let state: Bool?
-
-    /// Diameter. Larger than `PendingDot` (9 pt) because this dot is the *primary* status
-    /// signal, not a secondary annotation.
-    private let diameter: CGFloat = 11
-
-    private var color: Color {
-        switch state {
-        case .some(true):  return Theme.failure    // red — Gatekeeper is off
-        case .some(false): return Theme.success    // green — Gatekeeper is on
-        case .none:        return Theme.accentGrey // grey — unknown
-        }
-    }
-
-    /// Tooltip copy. Also the only place the dot's *meaning* is spelled out, which is what
-    /// makes it safe for the colour to be the primary channel.
-    private var label: String {
-        switch state {
-        case .some(true):  return "Gatekeeper is bypassed — this Mac will run unsigned software."
-        case .some(false): return "Gatekeeper is active."
-        case .none:        return "Gatekeeper status could not be read."
-        }
-    }
-
-    var body: some View {
-        // A ring around a filled core: the ring keeps the dot legible at 11 pt, where a
-        // plain filled circle would read as a smudge against the dark gradient.
-        ZStack {
-            Circle()
-                .stroke(color.opacity(0.45), lineWidth: 2)
-                .frame(width: diameter + 4, height: diameter + 4)
-            Circle()
-                .fill(color)
-                .frame(width: diameter, height: diameter)
-        }
-        .animation(Theme.toggle.animation, value: state)
-        .accessibilityTitle(label)
-    }
-}
-
 extension View {
     /// Sets the AppKit tooltip and the VoiceOver label for a control in one modifier.
     ///

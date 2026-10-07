@@ -83,17 +83,16 @@ struct MiniAppView: View {
 
     // MARK: - Chrome
 
-    /// Title, Gatekeeper status dot, and the close button.
+    /// Title and the close button.
     ///
-    /// The status dot is the same `GatekeeperStatusDot` the main panel uses, because
-    /// "is this Mac protected?" is the one fact worth surfacing in a panel this small.
+    /// The Gatekeeper status dot that used to sit between them was removed (Phase 11.4,
+    /// owner decision): row 1 below shows the real value, and an unreadable state carries
+    /// the grey "unknown" tooltip instead.
     private var header: some View {
         HStack(spacing: 8) {
             Text("Rosetta Stone")
                 .font(.system(size: 14, weight: .semibold))
                 .foregroundColor(Theme.title)
-
-            GatekeeperStatusDot(state: coordinator.gatekeeperBypassed)
 
             Spacer(minLength: 0)
 
@@ -119,12 +118,17 @@ struct MiniAppView: View {
 
     private var rows: some View {
         VStack(spacing: 0) {
-            MiniToggleRow(
-                feature: .gatekeeper,
-                isOn: stagedValue(for: .gatekeeper),
-                hasPendingChange: pending[.gatekeeper] != nil,
-                isEnabled: coordinator.isBusy == false,
-                onStage: { stageToggle(.gatekeeper, newValue: $0) }
+            // ON == enforcing (Phase 11.4), same mapping as the main panel. The grey
+            // "unknown" tooltip rides on the row when `spctl --status` was unreadable.
+            TooltipHost(
+                text: coordinator.gatekeeperBypassed == nil ? GatekeeperPolicy.unknownTooltip : "",
+                content: MiniToggleRow(
+                    feature: .gatekeeper,
+                    isOn: stagedValue(for: .gatekeeper),
+                    hasPendingChange: pending[.gatekeeper] != nil,
+                    isEnabled: coordinator.isBusy == false,
+                    onStage: { stageToggle(.gatekeeper, newValue: $0) }
+                )
             )
             RowSeparator()
 
@@ -203,7 +207,9 @@ struct MiniAppView: View {
     private func actualValue(for feature: FeatureID) -> Bool {
         switch feature {
         case .runAtStartup: return coordinator.runAtStartup
-        case .gatekeeper:   return coordinator.gatekeeperBypassed ?? false
+        // ON == enforcing (Phase 11.4); `nil` falls back to OFF for display only, with the
+        // grey unknown tooltip on the row.
+        case .gatekeeper:   return coordinator.gatekeeperBypassed == false
         case .hiddenFiles:  return coordinator.hiddenFilesShown
         default:            return false
         }
@@ -276,7 +282,7 @@ struct MiniAppView: View {
     /// free and can always be done.
     private func cancelPendingChanges() {
         pending.removeAll()
-        coordinator.loadState()
+        coordinator.loadState("mini cancel")
     }
 }
 

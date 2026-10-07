@@ -120,7 +120,7 @@ final class FeatureCoordinator: ObservableObject {
     ///
     /// The single-operation lock must be decided on the serial queue. Deciding it from
     /// the `@Published busyFeature` would be racy: that value is written on the main
-    /// thread, so a URL action dispatched straight onto `queue` could read a stale
+    /// thread, so an immediate action dispatched straight onto `queue` could read a stale
     /// `nil` and start a second `osascript` prompt alongside the first.
     private var activeFeature: ActiveOperation?
 
@@ -141,13 +141,31 @@ final class FeatureCoordinator: ObservableObject {
     /// True while any operation is in flight — a single feature **or** a batch.
     ///
     /// The menu bar disables its mutating items from exactly this, so a queued batch also
-    /// blocks the shortcuts: a URL action must not slip in beside a live Authorization dialog.
+    /// blocks them: an immediate action must not slip in beside a live Authorization dialog.
     var isBusy: Bool { busyFeature != nil || isApplyingBatch }
 
-    // MARK: - Initial state load
+    // MARK: - State resync (truth-first, Phase 11.4)
 
-    /// Reads every feature's state, unprivileged. Called once at launch.
-    func loadState() {
+    /// Reads every feature's state, unprivileged.
+    ///
+    /// Resync triggers, all funnelled through here so the log can say *why* a read
+    /// happened (`docs/ARCHITECTURE.md` §6, "Two layers of state"):
+    ///
+    /// 1. **launch** — `AppDelegate.applicationDidFinishLaunching`,
+    /// 2. **app/window didBecomeActive** — `AppDelegate` observes
+    ///    `NSApplication.didBecomeActiveNotification`, so a state that changed while the
+    ///    panel was in the background (System Settings, an MDM policy, a terminal command)
+    ///    is re-read the moment the user comes back,
+    /// 3. **after every Apply** — `applyBatch` ends in `reloadState()`,
+    /// 4. **after every CANCEL** — both panels' `cancelPendingChanges()` call this,
+    /// 5. **after every single-operation terminal state** — `finish` calls `reloadState()`,
+    ///    cancellation included.
+    ///
+    /// - Parameter reason: free-text trigger label, logged before the read. Rows without a
+    ///   staged change display exactly these values; rows with a staged change keep the
+    ///   staged value and their orange dot until Apply/CANCEL.
+    func loadState(_ reason: String = "unspecified") {
+        Trace.batch("loadState: requested (\(reason))")
         queue.async { [weak self] in
             self?.reloadState()
         }
@@ -189,7 +207,7 @@ final class FeatureCoordinator: ObservableObject {
 
     /// Translates one staged change into the command that will commit it.
     ///
-    /// Lives beside the other write paths so the *immediate* routes (menu bar, URL scheme) and
+    /// Lives beside the other write paths so the *immediate* route (menu bar) and
     /// the *queued* route cannot drift: both ultimately call the same `SystemCommands`
     /// primitives with the same strings. Returns `nil` for a change that has no command —
     /// a locked row, or a one-shot action that is already satisfied.
@@ -213,10 +231,14 @@ final class FeatureCoordinator: ObservableObject {
                 },
                 requiresAdmin: false)
 
-        case (.gatekeeper, .toggle(let bypassed)):
+        case (.gatekeeper, .toggle(let enforcing)):
+            // ON == enforce (Phase 11.4 owner spec): the switch shows the protection, not
+            // what has been turned off. The mapping itself lives in one function so this
+            // route and `writeGatekeeper` cannot invert each other — the off-Mac harness
+            // asserts it (`tests/MacProfileTests.swift`).
             return FeatureCommand(
                 feature: feature,
-                work: .shell("\(Tool.spctl) --master-\(bypassed ? "disable" : "enable")"),
+                work: .shell(SystemCommands.gatekeeperShell(enabling: enforcing)),
                 requiresAdmin: true)
 
         case (.hiddenFiles, .toggle(let shown)):
@@ -368,8 +390,16 @@ final class FeatureCoordinator: ObservableObject {
                     // Silent revert: the user dismissed the dialog, which is itself the answer.
                     coordinator.statusMessage = nil
                 } else if report.allSucceeded {
+                    // Success-with-note (Phase 11.4): if the ordered Finder refresh chain
+                    // was exhausted, the Hidden Files item carries the Thai+English note as
+                    // its success output. That note is the actionable half of "success", so
+                    // it replaces the generic all-green line; a batch that did not touch
+                    // Hidden Files keeps it unchanged.
+                    let note = report.outcome(for: .hiddenFiles)?.output ?? ""
                     coordinator.statusMessage = StatusMessage(
-                        text: "สำเร็จทั้งหมด · \(report.items.count) change(s) applied.",
+                        text: note.isEmpty
+                            ? "สำเร็จทั้งหมด · \(report.items.count) change(s) applied."
+                            : note,
                         style: .success)
                 } else {
                     coordinator.statusMessage = StatusMessage(
@@ -405,8 +435,8 @@ final class FeatureCoordinator: ObservableObject {
                  successMessage: String?,
                  work: @escaping () -> CommandOutcome) {
         // The lock is taken *on the serial queue*, never on the main thread. Callers reach
-        // this from the UI, from a URL, and — for the toggle URL actions — from `queue`
-        // itself, so the guard has to be correct regardless of which queue it is run on.
+        // this from the panel and from the menu-bar menu, so the guard has to be correct
+        // regardless of which queue it is run on.
         // Deciding it from the `@Published busyFeature` would be racy: that value is
         // written on the main thread, so a second request could read a stale `nil` and
         // open a second Authorization dialog alongside the first.
@@ -471,7 +501,7 @@ final class FeatureCoordinator: ObservableObject {
     }
 
     /// Publishes a message without running a command — used for validation and for
-    /// refusing a URL-driven action that the current CPU does not support.
+    /// explaining why the current CPU does not support a requested action.
     func report(_ text: String, style: StatusStyle = .info) {
         publish { $0.statusMessage = StatusMessage(text: text, style: style) }
     }

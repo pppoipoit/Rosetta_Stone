@@ -7,10 +7,10 @@ import Combine
 ///
 /// The **Run at Startup** toggle chooses the app's entire posture (`AppMode`):
 ///
-/// | Mode | Toggle | Launch | Dock icon | Menu-bar icon | URL actions |
-/// |------|--------|--------|-----------|---------------|-------------|
-/// | A — normal | OFF (default) | window shown | yes | no | refused |
-/// | B — gadget | ON | window hidden | no (`LSUIElement`) | always | all seven work |
+/// | Mode | Toggle | Launch | Dock icon | Menu-bar icon |
+/// |------|--------|--------|-----------|---------------|
+/// | A — normal | OFF (default) | window shown | yes | no |
+/// | B — gadget | ON | window hidden | no (`LSUIElement`) | always |
 ///
 /// The mode is *re-derived from reality* — `FeatureCoordinator.runAtStartup` — on every
 /// change, so flipping the toggle flips the posture of the running process without a
@@ -22,12 +22,11 @@ import Combine
 ///
 /// ## Why a delegate rather than pure SwiftUI
 ///
-/// `MenuBarExtra` needs macOS 13 and `onOpenURL` needs macOS 11, but the deployment floor
-/// is 10.15. So the status item, the window and URL delivery all live in AppKit; the
-/// panel's *contents* are SwiftUI, hosted in an `NSHostingView`. `RosettaStoneApp`
-/// provides the SwiftUI `App` entry point on macOS 11+ and `main.swift` falls back to
-/// this delegate on 10.15 — both funnel into the same delegate, so there is only ever
-/// one code path for behaviour.
+/// `MenuBarExtra` needs macOS 13, but the deployment floor is 10.15. So the status item
+/// and the window live in AppKit; the panel's *contents* are SwiftUI, hosted in an
+/// `NSHostingView`. `RosettaStoneApp` provides the SwiftUI `App` entry point on macOS 11+
+/// and `main.swift` falls back to this delegate on 10.15 — both funnel into the same
+/// delegate, so there is only ever one code path for behaviour.
 ///
 /// ## The main menu is built here, not in a nib
 ///
@@ -49,19 +48,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// Subscriptions that flip the mode when `runAtStartup` changes.
     private var cancellables: Set<AnyCancellable> = []
-
-    /// Set once the UI is ready. URL actions are queued against this rather than being
-    /// dropped — see `handle(urls:)`.
-    private var isReady = false
-
-    /// URLs that arrived before the delegate finished setting up.
-    ///
-    /// This is the fix for the cold-start Shortcuts bug. Launch Services delivers
-    /// `application(_:open:)` on a **cold start** while the app is still launching; the
-    /// previous code re-dispatched exactly once on the next runloop turn and silently
-    /// discarded the URL if the presenter was not up yet. A queue cannot lose a URL, and
-    /// cannot spin either: `drainPendingURLs()` is only reached once `isReady` is true.
-    private var pendingURLs: [URL] = []
 
     // MARK: - Init
 
@@ -118,7 +104,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let controller = MenuBarController(coordinator: coordinator,
                                            gadgetMode: mode == .menuBarGadget)
         menuBarController = controller
-        isReady = true
 
         // The menu is installed **after** the presenter exists, because every item in it
         // targets the controller. Installing it earlier would leave items pointing at a
@@ -126,7 +111,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         installMainMenu()
 
         // Unprivileged state read: opening the app must never cost a password prompt.
-        coordinator.loadState()
+        // Launch is resync trigger #1 of the truth-first set (Phase 11.4); the others are
+        // `applicationDidBecomeActive`, `windowDidBecomeKey`, Apply and CANCEL.
+        coordinator.loadState("launch")
 
         let autoBoot = coordinator.availability(for: .autoBoot).isEnabled ? "available" : "locked"
         let rosetta = coordinator.availability(for: .rosetta2).isEnabled ? "available" : "locked"
@@ -146,11 +133,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             .store(in: &cancellables)
 
-        // A cold start caused by Launch Services delivers the URL *after* this method
-        // returns, so `application(_:open:)` handles it.
-        //
-        // Only now that the presenter exists is it safe to run anything that was queued.
-        drainPendingURLs()
+        // Truth-first resync (Phase 11.4): a state that changed while the panel was in the
+        // background — System Settings, an MDM policy, a terminal command — must be
+        // re-read the moment the user comes back. Two triggers, both free (unprivileged):
+        // the app becoming active, and any of this app's own windows becoming key.
+        NotificationCenter.default.addObserver(self,
+                                               selector: #selector(windowDidBecomeKey),
+                                               name: NSWindow.didBecomeKeyNotification,
+                                               object: nil)
 
         // Mode A is an ordinary windowed app: the panel opens at launch. Mode B is the
         // background gadget — no window, ever, until the user asks for one.
@@ -160,6 +150,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         } else {
             Trace.log("launch hidden (menu-bar gadget mode)")
         }
+    }
+
+    /// Resync trigger #2 (Phase 11.4): the app itself became active — the user switched
+    /// back from another application, or clicked one of the panel's windows while the app
+    /// was in the background.
+    ///
+    /// `NSApplicationDelegate` delivers this through `NSApplication.didBecomeActiveNotification`,
+    /// so no extra observer is registered for it. The read is unprivileged, so re-reading
+    /// on every activation costs nothing but a few milliseconds of CPU.
+    func applicationDidBecomeActive(_ notification: Notification) {
+        Trace.batch("resync: applicationDidBecomeActive — reloading state")
+        coordinator.loadState("app didBecomeActive")
+    }
+
+    /// Resync trigger #3 (Phase 11.4): one of this app's windows became key — the user
+    /// clicked from the main panel to the mini panel, reopened the panel, or a sheet
+    /// finished and focus returned.
+    ///
+    /// Registered as a window observer rather than an app-level one because an already
+    /// active app does not re-post `didBecomeActive` when focus moves between its own
+    /// windows; without this, the second window would keep whatever state it was built
+    /// with. `isVisible` filters the (rare) key notifications from windows that are being
+    /// ordered out.
+    @objc private func windowDidBecomeKey(_ notification: Notification) {
+        guard let window = notification.object as? NSWindow, window.isVisible else { return }
+        Trace.batch("resync: window didBecomeKey (\(type(of: window))) — reloading state")
+        coordinator.loadState("window didBecomeKey")
     }
 
     /// Applies a posture change to the running process.
@@ -349,104 +366,5 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         alert.addButton(withTitle: "OK")
         NSApp.activate(ignoringOtherApps: true)
         alert.runModal()
-    }
-
-    // MARK: - URL scheme
-
-    /// Hard ceiling on the cold-start URL queue.
-    ///
-    /// Launch Services can deliver a burst of URLs (a shortcut that fires three actions, or
-    /// a login item replaying them), and the queue is drained only once the presenter
-    /// exists. Ten is far more than any real burst — and a queue that cannot be bounded is a
-    /// queue that can grow without limit in a process nobody is watching. The **oldest**
-    /// entries are dropped, so the most recent intent is the one that survives.
-    private static let maxPendingURLs = 10
-
-    /// Appends to the cold-start queue, enforcing the ceiling.
-    ///
-    /// Plain array bookkeeping on purpose. The queue is drained exactly once, by
-    /// `drainPendingURLs()`, after `applicationDidFinishLaunching` has built the presenter.
-    /// There is no re-dispatch and no `DispatchQueue.main.async` hop anywhere on this path,
-    /// which is what makes both failure modes impossible: a URL that can be lost, and a
-    /// drain that can re-enter itself.
-    private func enqueue(_ urls: [URL]) {
-        Trace.log("url queued count=\(urls.count) pending=\(pendingURLs.count) (presenter not ready yet)")
-        pendingURLs.append(contentsOf: urls)
-        guard pendingURLs.count > AppDelegate.maxPendingURLs else { return }
-        let overflow = pendingURLs.count - AppDelegate.maxPendingURLs
-        pendingURLs.removeFirst(overflow)
-        Trace.log("url queue ceiling=\(AppDelegate.maxPendingURLs) exceeded: dropped \(overflow) oldest")
-    }
-
-    /// Handles `rosettastone://…` delivered by Launch Services.
-    ///
-    /// This is the whole automation surface, and it belongs to mode B (Run at Startup
-    /// ON): the gadget is always running, so Launch Services reaches a live instance and
-    /// the action lands immediately. A cold start still works — the URL is queued by
-    /// `handle(urls:)` until the presenter exists. In mode A URLs are refused; see the
-    /// mode gate there.
-    func application(_ application: NSApplication, open urls: [URL]) {
-        Trace.log("url delivered count=\(urls.count) "
-            + urls.map(\.absoluteString).joined(separator: ","))
-        handle(urls: urls)
-    }
-
-    /// Routes URLs now, or queues them until the presenter is ready.
-    ///
-    /// The queue is what guarantees all seven Shortcuts actions work on a cold start: the
-    /// URL can legally arrive before `applicationDidFinishLaunching` has built the
-    /// presenter, and losing it would silently do nothing for the user.
-    ///
-    /// ## Mode gate
-    ///
-    /// URL actions are the **power-user (Mode B, Run at Startup ON)** surface. In mode A
-    /// the app is an ordinary windowed app that is not running in the background, so URL
-    /// actions are refused — with an explanation in the panel footer rather than a silent
-    /// no-op — and only recognised actions are reported. A malformed URL stays silent in
-    /// every mode.
-    func handle(urls: [URL]) {
-        guard !urls.isEmpty else { return }
-
-        guard mode == .menuBarGadget else {
-            let recognised = urls.filter { URLAction.kind(for: $0) != nil }
-            guard !recognised.isEmpty else {
-                Trace.log("url ignored in normal mode (unknown action)")
-                return
-            }
-            Trace.log("url refused in normal mode count=\(recognised.count) "
-                + "(URL actions require Run at Startup)")
-            coordinator.report(URLActionRouter.normalModeRefusalMessage, style: .info)
-            if isReady { menuBarController?.showMainWindow() }
-            return
-        }
-
-        guard isReady, let presenter = menuBarController else {
-            enqueue(urls)
-            return
-        }
-        // `MenuBarController` is the presenter: it owns the window and raises the sheet.
-        for url in urls {
-            URLActionRouter.route(url, coordinator: coordinator, presenter: presenter)
-        }
-    }
-
-    /// Executes everything queued during launch. Called exactly once, from
-    /// `applicationDidFinishLaunching`, and only after the presenter exists.
-    ///
-    /// The guard is re-checked rather than assumed: `drainPendingURLs` must not be able to
-    /// re-enter itself or run against a half-built presenter.
-    private func drainPendingURLs() {
-        guard !pendingURLs.isEmpty else { return }
-        let queued = pendingURLs
-        pendingURLs.removeAll()
-        // Re-checked rather than assumed: the drain must not be able to recurse.
-        guard isReady, let presenter = menuBarController else {
-            pendingURLs = queued
-            return
-        }
-        Trace.log("url draining \(queued.count) queued action(s)")
-        for url in queued {
-            URLActionRouter.route(url, coordinator: coordinator, presenter: presenter)
-        }
     }
 }

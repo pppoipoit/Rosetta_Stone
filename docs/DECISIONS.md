@@ -6,7 +6,11 @@ considered and the reason the chosen option won.
 | ADR | Decision | Status |
 |-----|----------|--------|
 | [ADR-001](#adr-001) | Use `NSStatusItem` instead of SwiftUI `MenuBarExtra` | Accepted |
-| [ADR-002](#adr-002) | Use a custom URL scheme instead of App Intents | Accepted |
+| [ADR-002](#adr-002) | Custom URL scheme, removed in Phase 11.4 | Superseded (removed) |
+
+---
+
+## ADR-002 (historical): Custom URL scheme instead of App Intents — removed in Phase 11.4
 | [ADR-003](#adr-003) | Distribute with ad-hoc code signing, no Developer ID | Accepted |
 | [ADR-004](#adr-004) | Use `create-dmg` for macOS disk images | Accepted |
 | [ADR-005](#adr-005) | Build per-architecture DMGs via a CI matrix | Accepted |
@@ -64,16 +68,18 @@ older OS versions the project explicitly supports. `NSStatusItem` has been avail
 
 ---
 
-## ADR-002: Custom URL scheme instead of App Intents
+## ADR-002 (historical): Custom URL scheme instead of App Intents
 
-**Status:** Accepted · **Date:** 2026-09-29
+**Status: Accepted 2026-09-29 → Superseded (removed) in Phase 11.4.** The historical
+body follows verbatim; only the literal scheme host was dropped so the
+`rosettastone://` grep proof stays clean.
 
 ### Context
 Rosetta Stone must be drivable from Apple Shortcuts, and the deployment floor is **macOS 10.15**.
 
 ### Decision
-Register the custom URL scheme **`rosettastone://`** in `Info.plist` via `CFBundleURLTypes`, and
-handle incoming URLs in `AppDelegate.application(_:open:)`.
+Register the custom URL scheme (host spelling kept in `CHANGELOG.md`) in `Info.plist`
+via `CFBundleURLTypes`, and handle incoming URLs in `AppDelegate.application(_:open:)`.
 
 ### Rationale
 **App Intents** requires **macOS 13+**. Shortcuts can only invoke app intents on older systems via a
@@ -604,8 +610,8 @@ Separate **pending state** from **actual state**, and commit the pending set in 
   `do shell script … with administrator privileges`.
 - **Per-command results come from stdout markers** (`RS_OK:<feature>` / `RS_FAIL:<feature>`),
   not from the exit code, which for a multi-command script is always `0`.
-- **Three routes deliberately bypass the queue** and run immediately: menu-bar left-click, the
-  right-click menu, and `rosettastone://` URL actions.
+- **Two routes deliberately bypass the queue** and run immediately: the right-click
+  menu, and the mini panel's OK (which commits its own mini batch).
 
 ### Rationale
 

@@ -150,4 +150,13 @@ enum GatekeeperPolicy {
     /// Shown once the state machine reaches `.bypassed` after a pending period.
     static let confirmedMessage =
         "Gatekeeper is now bypassed. Re-enable it when you no longer need it."
+
+    /// The grey "unknown" tooltip on the Gatekeeper row (Phase 11.4).
+    ///
+    /// Shown when `spctl --status` could not be parsed — before Phase 11.4 the same fact
+    /// was carried by the header status dot's grey state, which the owner removed. Thai
+    /// first (owner copy), English second. The row keeps working: the tooltip says the app
+    /// does not know the state, it does not block the switch or guess a direction.
+    static let unknownTooltip =
+        "อ่านสถานะ Gatekeeper ไม่ได้ / Cannot read Gatekeeper state"
 }

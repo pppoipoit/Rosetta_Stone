@@ -46,8 +46,8 @@ import Combine
 /// - The mini panel is an `NSPanel`, built lazily on the first left-click and retained
 ///   thereafter for the same reason. It is built **only in mode B** — it is meaningless
 ///   without a status item to click, and building it in mode A would be dead weight.
-/// - Both are built in mode B: the full panel is still needed for "Open Main Window", for
-///   `rosettastone://open-app`, and for the destructive-action sheet.
+/// - Both are built in mode B: the full panel is still needed for "Open Main Window"
+///   and for the destructive-action sheet.
 ///
 /// The dropdown menu and its actions live in the extension at the bottom of this file.
 final class MenuBarController: NSObject {
@@ -575,10 +575,9 @@ final class MenuBarController: NSObject {
 
     /// Brings the full panel forward.
     ///
-    /// Works in both modes: in mode B it is the "Open Main Window" menu item and the
-    /// landing point for `rosettastone://open-app`; in mode A it is how the app comes
-    /// back after the user closes the panel. It is never called automatically at launch
-    /// in mode B.
+    /// Works in both modes: in mode B it is the "Open Main Window" menu item; in mode A it
+    /// is how the app comes back after the user closes the panel. It is never called
+    /// automatically at launch in mode B.
     func showMainWindow() {
         // Never leave the mini panel on top of the full one: two Rosetta Stone panels at
         // once looks like a bug and makes the mini panel's OK ambiguous about which queue
@@ -593,7 +592,7 @@ final class MenuBarController: NSObject {
         NSApp.activate(ignoringOtherApps: true)
         // A freshly opened panel must show current truth, not the state from the last
         // time it was closed. The re-read is unprivileged, so it costs nothing.
-        coordinator.loadState()
+        coordinator.loadState("show main window")
         Trace.log("panel shown")
     }
 
@@ -709,41 +708,6 @@ final class MenuBarController: NSObject {
     /// A named constant rather than a literal at the call site, so the delay is greppable
     /// and tunable from one place.
     static let settingsFollowUpDelay: TimeInterval = 1.0
-
-    /// Brings the app forward without showing the panel — used before a modal alert so
-    /// the dialog is clearly attributed to Rosetta Stone.
-    func activateApp() {
-        NSApp.activate(ignoringOtherApps: true)
-    }
-}
-
-// MARK: - URLActionHandling
-
-/// The menu-bar controller is the presenter for URL-driven actions: it owns the only
-/// window, so it is the right place to show it and to raise a confirmation sheet.
-extension MenuBarController: URLActionHandling {
-
-    /// Presentations required by `URLActionHandling`. `showMainWindow()` already exists
-    /// on the class itself, so only the destructive-action gate is added here.
-    ///
-    /// Used for `rosettastone://clear-cache`: a URL caller still does not get to delete
-    /// `/Library/Caches` without the user being told exactly what happens.
-    func performDestructiveAction(_ title: String, message: String, action: @escaping () -> Void) {
-        let alert = NSAlert()
-        alert.alertStyle = .critical
-        alert.messageText = title
-        alert.informativeText = message
-        alert.addButton(withTitle: "Clear Cache")
-        alert.addButton(withTitle: "Cancel")
-
-        // Bring the panel forward so the dialog is clearly attributed to this app.
-        showMainWindow()
-        activateApp()
-
-        if alert.runModal() == .alertFirstButtonReturn {
-            action()
-        }
-    }
 }
 
 extension MenuBarController {
@@ -882,7 +846,7 @@ extension MenuBarController {
     ///
     /// A standalone alert rather than the panel sheet: the menu is the gadget's interface,
     /// and opening the main window just to ask for a confirmation would defeat the mode.
-    /// The warning text is the same constant the panel and the URL scheme use.
+    /// The warning text is the same constant the panel's confirmation sheet uses.
     @objc private func confirmClearCache() {
         assert(Thread.isMainThread, "menu actions arrive on the main thread")
         let alert = NSAlert()
@@ -931,7 +895,7 @@ extension MenuBarController {
         //  • otherwise the state publisher fires after the operation's authoritative
         //    re-read, and *that* is the truth the toast reports.
         //
-        // The optimistic success message that `toggleGatekeeper()` publishes up front is
+        // The optimistic success message published up front by an immediate action is
         // deliberately ignored: at that point nothing has happened yet.
         coordinator.$statusMessage
             .receive(on: RunLoop.main)

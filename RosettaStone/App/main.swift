@@ -4,14 +4,14 @@ import AppKit
 // Swift app differ across that range:
 //
 //   • macOS 11+  — the SwiftUI `App` lifecycle (`RosettaStoneApp`), which provides
-//                  `@NSApplicationDelegateAdaptor` and `onOpenURL`.
+//                  `@NSApplicationDelegateAdaptor`.
 //   • macOS 10.15 — `SwiftUI.App` does not exist yet (Big Sur introduced it), so the
 //                  AppKit `NSApplication` + `NSApplicationDelegate` pair is booted
 //                  directly. This is exactly what `@main` expands to under the hood.
 //
 // Both branches construct the same `AppDelegate`, so all behaviour — the NSStatusItem,
-// the panel, the URL-scheme handler, the CPU gating — lives in one implementation and
-// cannot drift between OS versions.
+// the panel, the CPU gating — lives in one implementation and cannot drift between OS
+// versions.
 //
 // `MenuBarExtra` is deliberately **not** used anywhere: it requires macOS 13 and would
 // force the deployment floor up. `NSStatusItem` has existed since 10.10 and behaves
@@ -21,7 +21,7 @@ import AppKit
 ///
 /// `NSApplication.delegate` is a *weak* reference. Without a strong owner here the
 /// delegate would be deallocated the instant this function returns, and the app would
-/// run with no status item and no URL handling.
+/// run with no status item and no window.
 private var retainedDelegate: AppDelegate?
 
 // Traced before anything else. The macOS 26 "process alive but invisible" report is only

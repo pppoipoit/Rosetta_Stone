@@ -38,9 +38,13 @@
 //  Exit code 0 == every assertion passed. 1 == at least one failed (each
 //  failure is printed with the expectation and the actual value).
 //
-//  THE 39 ASSERTIONS
+//  THE 52 ASSERTIONS
 //  12 x fromModelName · 10 x fromModelIdentifier · 8 x parseModelName ·
-//  6 x supportsAutoBoot · 4 x autoBootDisabledReason. See `runAll()`.
+//  6 x supportsAutoBoot · 4 x autoBootDisabledReason ·
+//  9 x spctl --status parsing (Phase 11.4, both strings × exit 0/1, garbage,
+//      empty, case + trailing newline) ·
+//  4 x Gatekeeper pending→command table (Phase 11.4, ON = enforce, OFF = bypass).
+//  See `runAll()`.
 // ============================================================================
 
 import Foundation
@@ -192,7 +196,59 @@ struct MacProfile {
         }
         return "Unknown CPU architecture — Auto Boot is disabled to stay safe."
     }
-}// ============================================================================ Harness
+}
+
+// MARK: - Copy: spctl parsing + the Gatekeeper command table (Phase 11.4)
+
+/// Stand-in for `SystemStateReader.parseSpctlStatus(stdout:)` — **copy-paste of the
+/// production function**, same trade as the `MacProfile` code above: the type names
+/// match, the body must not drift, and the production I/O path
+/// (`SystemStateReader.isGatekeeperBypassed()`, which spawns `spctl`) is covered
+/// on-device through the `Trace.batch` line it emits.
+///
+/// The signature carries the contract: there is no `exitCode` parameter, because the
+/// reader must parse stdout whatever the exit status was (owner evidence, 14.7.4:
+/// `exit=1 raw=[assessments disabled]` — the old reader discarded that stdout and the
+/// UI saw `nil`, which then suppressed the macOS 15+ confirmation gate).
+enum SystemStateReader {
+    static func parseSpctlStatus(stdout: String) -> Bool? {
+        let output = stdout.lowercased()
+        if output.contains("assessments disabled") { return true }
+        if output.contains("assessments enabled") { return false }
+        return nil
+    }
+}
+
+/// The reader's decision with the process result as **explicit inputs**, so the harness
+/// can assert both exit codes for both strings. The exit code is accepted and then
+/// discarded — that is the whole point of TASK 1, and the assertions in
+/// `testSpctlStatusParsing()` pin it in both directions.
+func readGatekeeper(stdout: String, exitCode: Int32) -> Bool? {
+    _ = exitCode // exit-code-agnostic by contract — see `parseSpctlStatus`
+    return SystemStateReader.parseSpctlStatus(stdout: stdout)
+}
+
+/// Copies of `SystemCommands.spctlTool` and `SystemCommands.gatekeeperShell(enabling:)` —
+/// the one pending→command table for the Gatekeeper row (TASK 3).
+extension SystemCommands {
+    static let spctlTool = "/usr/sbin/spctl"
+
+    static func gatekeeperShell(enabling: Bool) -> String {
+        "\(spctlTool) --master-\(enabling ? "enable" : "disable")"
+    }
+}
+
+/// The Gatekeeper case of `FeatureCoordinator.command(for:pending:)`, copied so the
+/// *pending value* → *shell command* direction is asserted, not just the string builder.
+///
+/// The pending payload's meaning is the row's: `true` == **ON == enforce** (Phase 11.4
+/// owner spec). Inversion here is the exact bug this table exists to make impossible.
+func pendingToggleCommand(enforcing: Bool) -> String {
+    SystemCommands.gatekeeperShell(enabling: enforcing)
+}
+
+// ============================================================================
+// Harness
 // ============================================================================
 
 /// Counts every expectation and reports the failures at the end.
@@ -229,13 +285,16 @@ func runAll() -> Int32 {
     testParseModelName()
     testSupportsAutoBoot()
     testAutoBootDisabledReason()
+    testSpctlStatusParsing()
+    testGatekeeperPendingCommandTable()
 
+    let total = Check.passed + Check.failures.count
     print("")
     if Check.failures.isEmpty {
-        print("PASS — \(Check.passed)/39 assertions")
+        print("PASS — \(Check.passed)/\(total) assertions")
         return 0
     }
-    print("FAIL — \(Check.failures.count) of \(Check.passed + Check.failures.count) assertions")
+    print("FAIL — \(Check.failures.count) of \(total) assertions")
     for failure in Check.failures { print("  x \(failure)") }
     return 1
 }
@@ -419,8 +478,67 @@ func testAutoBootDisabledReason() {
                 "unknown model reports the fail-safe reason")
 }
 
+// MARK: - 6. spctl --status parsing, exit-code agnostic (9)
+
+/// TASK 1 of Phase 11.4: `spctl --status` stdout must parse whatever the exit status is.
+///
+/// The owner capture on 14.7.4 was `exit=1 raw=[assessments disabled]` on an
+/// already-bypassed machine; the reader that gated on `exit == 0` threw that stdout away,
+/// published `nil`, and the macOS 15+ confirmation — which requires a parsed `true` —
+/// never fired. Both real strings are therefore asserted against **both** exits.
+func testSpctlStatusParsing() {
+    // "assessments disabled" → bypassed.
+    Check.equal(readGatekeeper(stdout: "assessments disabled", exitCode: 0), true,
+                "assessments disabled + exit 0 → bypassed")
+    Check.equal(readGatekeeper(stdout: "assessments disabled", exitCode: 1), true,
+                "assessments disabled + exit 1 → STILL bypassed (the owner capture)")
+
+    // "assessments enabled" → enforcing.
+    Check.equal(readGatekeeper(stdout: "assessments enabled", exitCode: 0), false,
+                "assessments enabled + exit 0 → enforcing")
+    Check.equal(readGatekeeper(stdout: "assessments enabled", exitCode: 1), false,
+                "assessments enabled + exit 1 → enforcing")
+
+    // Unrecognised output is *unknown*, never a guess — under either exit status.
+    Check.equal(readGatekeeper(stdout: "spctl: rule evaluation disabled by policy", exitCode: 0), nil,
+                "garbage + exit 0 → unknown")
+    Check.equal(readGatekeeper(stdout: "spctl: rule evaluation disabled by policy", exitCode: 1), nil,
+                "garbage + exit 1 → unknown")
+
+    // Empty stdout is unknown too: no phrase to parse, no exit code to rescue it.
+    Check.equal(readGatekeeper(stdout: "", exitCode: 0), nil,
+                "empty stdout + exit 0 → unknown")
+    Check.equal(readGatekeeper(stdout: "", exitCode: 1), nil,
+                "empty stdout + exit 1 → unknown")
+
+    // Real spctl output ends in a newline and follows the process locale's casing.
+    Check.equal(readGatekeeper(stdout: "assessments Disabled\n", exitCode: 1), true,
+                "mixed case + trailing newline still parse")
+}
+
+// MARK: - 7. Gatekeeper pending → command table (4)
+
+/// TASK 3 of Phase 11.4, owner-verified spec: **toggle ON = enforce → `--master-enable`**,
+/// **toggle OFF = bypass → `--master-disable`**. The pending payload is the row's value
+/// (`true` == ON), so this asserts the whole path from "what the user staged" to "the
+/// shell the admin prompt will run". Inverting either direction fails here.
+func testGatekeeperPendingCommandTable() {
+    Check.equal(pendingToggleCommand(enforcing: true),
+                "/usr/sbin/spctl --master-enable",
+                "pending ON (enforce) → spctl --master-enable")
+    Check.equal(pendingToggleCommand(enforcing: false),
+                "/usr/sbin/spctl --master-disable",
+                "pending OFF (bypass) → spctl --master-disable")
+
+    // Belt and braces against an accidental inversion inside the string builder.
+    Check.expect(pendingToggleCommand(enforcing: true).hasSuffix("--master-enable"),
+                 "ON never produces --master-disable (no inversion, ever)")
+    Check.expect(pendingToggleCommand(enforcing: false).hasSuffix("--master-disable"),
+                 "OFF never produces --master-enable (no inversion, ever)")
+}
+
 // ============================================================================
 
-print("MacProfile — Auto Boot gating harness (ADR-008)")
-print("model classification · profiler parsing · availability rule")
+print("MacProfile + Phase 11.4 reader/mapping harness (ADR-008)")
+print("model classification · profiler parsing · availability rule · spctl parsing · gatekeeper table")
 exit(runAll())

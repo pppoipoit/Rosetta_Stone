@@ -1,5 +1,11 @@
 # Features Specification
 
+> **Phase 11.4.** The URL-scheme Shortcuts surface (custom scheme host, `URLActionRouter`,
+> `CFBundleURLTypes`, the cold-start queue) was removed by owner decision. All seven actions
+> died with it: the §9 action table is gone, the in-app hotkeys are the only keyboard
+> surface (⌘Q ⌘W ⌘M ⌘D ⌘↩ ⌘⌫). The Gatekeeper row changed with the same phase: **ON == enforce**
+> (`spctl --master-enable`), **OFF == bypass** (`spctl --master-disable`).
+
 Source of truth for every Rosetta Stone capability. Each section below states the purpose, the
 exact shell command executed, whether administrator rights are required, the availability matrix,
 the UI control type, and the edge cases the implementation must handle.
@@ -17,7 +23,7 @@ Notation used throughout this document:
 | # | Feature | UI control | Admin? | Queued? | Intel x64 | Apple Silicon arm64 |
 |---|---------|------------|--------|---------|-----------|---------------------|
 | 1 | Run at Startup | Toggle | **Yes** (admin) | ✅ | ✅ Available | ✅ Available |
-| 2 | Gatekeeper | Toggle | **Yes** (admin) | ✅ | ✅ Available | ✅ Available |
+| 2 | Gatekeeper | Toggle (ON = enforce) | **Yes** (admin) | ✅ | ✅ Available | ✅ Available |
 | 3 | Hidden Files | Toggle (ON = show) | No | ✅ | ✅ Available | ✅ Available |
 | 4 | Auto Boot | Toggle | **Yes** (admin) | ✅ | ✅ Available | ⛔ Greyed + lock icon |
 | 5 | Rosetta 2 | Install button | **Yes** (admin) | ✅ | ⛔ Greyed | ✅ Available |
@@ -26,8 +32,7 @@ Notation used throughout this document:
 | 8 | Clear System Cache | Button | **Yes** (admin) | ✅ | ✅ Available | ✅ Available |
 
 **Queued?** describes the **panel** only: a ✅ row is staged and committed by the master
-**OK** button. The menu-bar controls and the `rosettastone://` URL scheme bypass the queue
-and run immediately — see §10.5.
+**OK** button. The menu-bar controls bypass the queue and run immediately — see §10.5.
 
 ### Privilege matrix
 
@@ -53,10 +58,10 @@ and run immediately — see §10.5.
 Install or remove a per-user `LaunchAgent` so Rosetta Stone is automatically relaunched at every
 login — and, in doing so, **choose the app's mode**. This toggle is the app's posture switch:
 
-| Toggle | Mode | Launch | Window | Dock icon | Menu-bar icon | URL actions |
-|--------|------|--------|--------|-----------|---------------|-------------|
-| OFF (default, first install) | **A — normal app** | panel shown | visible | **yes** | none | refused |
-| ON | **B — menu-bar gadget** | hidden | none at launch | **no** (`LSUIElement`) | always visible | all seven work |
+| Toggle | Mode | Launch | Window | Dock icon | Menu-bar icon |
+|--------|------|--------|--------|-----------|---------------|
+| OFF (default, first install) | **A — normal app** | panel shown | visible | **yes** | none |
+| ON | **B — menu-bar gadget** | hidden | none at launch | **no** (`LSUIElement`) | always visible |
 
 The switch takes effect **live**, in the running process: turning it ON installs the login item,
 installs the menu-bar icon and drops the Dock icon; turning it OFF deletes the login item,
@@ -65,14 +70,14 @@ relaunch is involved in either direction.
 
 ### Mode B at a glance
 
-- **Left-click the menu-bar icon toggles Gatekeeper directly** — no dropdown, no window. The
-  macOS password prompt appears, and a **toast** under the icon reports the outcome
-  (`StatusItemToast`: “Gatekeeper is bypassed.” / “Gatekeeper is active.” / the failure text).
-  A dismissed prompt is silent, and hovering the icon shows the same state in its tooltip.
+- **Left-click the menu-bar icon opens the mini panel** — three switches (Gatekeeper,
+  Hidden Files, Run at Startup) with an **OK** / **CANCEL** bar and an **Open Main App**
+  button. It stages and commits exactly like the full panel: one password prompt for the
+  whole set (`MiniAppView`).
 - **Right-click (or Control-click)** opens the full menu: Open Main Window, Toggle Hidden
   Files, Flush DNS, Rebuild Spotlight, Clear System Cache… (confirmed), Diagnostics… (⌘D),
   Quit (⌘Q).
-- The window is only ever shown on demand: the menu item, `rosettastone://open-app`, or a
+- The window is only ever shown on demand: the menu item or a
   Launch Services / Dock activation.
 
 ### Exact command
@@ -143,28 +148,43 @@ additional, explicit signal used by the login launch.
 
 ## 2. Gatekeeper
 
-> **Queue:** ✅ Yes in the panel. ❌ No (immediate) for the menu-bar left-click and the
-> `rosettastone://toggle-gatekeeper` URL action — both run at once with a single auth prompt.
-> On macOS 15+, System Settings is opened only **after** a successful batch, never after a
-> failure or a cancellation.
+> **Queue:** ✅ Yes in the panel. ❌ No (immediate) for the menu-bar immediate action —
+> it runs at once with a single auth prompt. On macOS 15+, System Settings is opened
+> only **after** a successful batch, never after a failure or a cancellation.
+>
+> **Phase 11.4 mapping (owner-verified): toggle ON = enforce → `spctl --master-enable`,
+> toggle OFF = bypass → `spctl --master-disable`.**
 
 ### Purpose
-Toggle macOS Gatekeeper's *master switch* between enforcing and disabled. Useful when a
-developer needs to run an unsigned or unnotarized tool (a Homebrew cask, an internal build, a
-legacy installer) without Gatekeeper blocking it.
+Toggle macOS Gatekeeper's *master switch* between **enforcing** (ON) and
+**bypassed / "Anywhere"** (OFF). Useful when a developer needs to run an unsigned or
+unnotarized tool (a Homebrew cask, an internal build, a legacy installer) without
+Gatekeeper blocking it.
 
-> ⚠️ This is a security-critical toggle. Turning it off removes one of the OS's main protections
-> against running untrusted software.
+> ⚠️ This is a security-critical toggle. Turning it **off** removes one of the OS's main
+> protections against running untrusted software.
+
+### Toggle semantics (Phase 11.4 — **inverted from Phases 1–11**)
+
+| Switch | Meaning | Command at commit |
+|--------|---------|-------------------|
+| **ON** | Gatekeeper is **enforcing** — unsigned apps are blocked (recommended) | `spctl --master-enable` |
+| **OFF** | Gatekeeper's master switch is **bypassed** — unsigned software runs without warnings | `spctl --master-disable` |
+
+Previously ON meant *bypassed*; that semantics is gone. The single mapping lives in
+`SystemCommands.gatekeeperShell(enabling:)` so the deferred-queue builder and the
+immediate path can never invert each other again, and the off-Mac harness asserts both
+directions (`tests/MacProfileTests.swift`).
 
 ### Exact command
 
-Disable **(admin)** — one step on macOS 10.15 – 14, **two steps on macOS 15 and later**:
+Bypass **(admin)** — one step on macOS 10.15 – 14, **two steps on macOS 15 and later**:
 
 ```bash
 spctl --master-disable
 ```
 
-Enable **(admin)** — one step on every version:
+Enforce **(admin)** — one step on every version:
 
 ```bash
 spctl --master-enable
@@ -177,7 +197,6 @@ runCommand("spctl --master-disable")
 openURL("x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles")
 showAlert("กรุณาเลือก 'Anywhere' ใน System Settings เพื่อยืนยันการปิด Gatekeeper")
 ```
-
 On macOS 15+ the CLI command alone no longer flips the **user-visible** switch: the user must
 also choose **Anywhere** under System Settings → Privacy & Security → Security → “Allow
 applications from”. The app therefore:
@@ -200,12 +219,17 @@ The app never tries to click “Anywhere” itself. System Settings is not scrip
 switch, and automating a security downgrade would be indistinguishable from malware.
 
 ### State readback
+
 ```bash
 spctl --status
-# "assessments enabled"  -> toggle OFF (Gatekeeper active)
-# "assessments disabled" -> toggle ON  (Gatekeeper disabled)
+# "assessments enabled"  -> toggle ON  (Gatekeeper enforcing)
+# "assessments disabled" -> toggle OFF (Gatekeeper bypassed)
 ```
-`spctl --status` is readable **without** elevation.
+
+`spctl --status` is readable **without** elevation. Parsing is **exit-code agnostic**:
+a non-zero exit never gates the parse — on 14.7.4 `spctl --status` exits 1 while
+printing `assessments disabled`, and throwing that stdout away read an already-bypassed
+machine as `nil` (`SystemStateReader.parseSpctlStatus(stdout:)`, Phase 11.4).
 
 ### Availability
 
@@ -225,10 +249,10 @@ spctl --status
   --status` can still report the old value. The app raises the confirmation alert as soon as
   the command succeeds and re-reads the state afterwards, so the toggle ends up reflecting
   the disk rather than the request.
-- The switch, the right-click menu item, the **left-click direct toggle** and
-  `rosettastone://toggle-gatekeeper` all funnel through one write path
-  (`FeatureCoordinator.writeGatekeeper(bypassed:)`), so the two-step procedure cannot be
-  skipped on one of them.
+- The switch, the right-click menu item and the panel's staged change all funnel through
+  the one write path (`FeatureCoordinator.command(for:pending:)` /
+  `FeatureCoordinator.writeGatekeeper(bypassed:)` via `SystemCommands.gatekeeperShell`),
+  so the two-step procedure cannot be skipped on one of them.
 - If a corporate MDM profile manages the setting, the toggle will appear to snap back. Surface
   a hint that the setting is policy-managed.
 - Never leave the app in a state where the user cannot find how to re-enable it: the
@@ -239,7 +263,7 @@ spctl --status
 ## 3. Hidden Files
 
 > **Queue:** ✅ Yes in the panel and in the mini panel. ❌ No (immediate) for the
-> `rosettastone://toggle-hidden-files` URL action and the right-click menu item.
+> right-click menu item.
 > **Finder is no longer restarted** (Phase 11) — see below.
 
 ### Purpose
@@ -248,6 +272,7 @@ pathologist's toggle — the single most-used hidden macOS setting.
 
 **Toggle semantics: ON = hidden files are shown.** This is deliberately inverted relative to the
 system default so the switch matches user intent rather than the underlying boolean.
+(Gatekeeper used to be inverted too; since Phase 11.4 it reads straight — ON = enforcing.)
 
 ### Exact command
 
@@ -256,12 +281,23 @@ Show hidden files (no elevation):
 ```bash
 defaults write com.apple.finder AppleShowAllFiles YES
 ```
-…then, in-process, an AppleScript refresh:
+…then, in-process, an ordered AppleScript refresh chain (Phase 11.4 — never
+`killall Finder`, which destroys scroll position, tabs and downloads):
 
 ```applescript
+tell application "Finder" to update (target of every window)
+```
+```applescript
 tell application "Finder"
-    update every window
+    repeat with w in windows
+        try
+            update (target of w)
+        end try
+    end repeat
 end tell
+```
+```applescript
+tell application "Finder" to update (path to home folder)
 ```
 
 Hide hidden files: identical, with `NO` instead of `YES`.
@@ -281,10 +317,20 @@ process every Finder window lives in, so:
 - anything mid-download in a window restarts,
 - and it had to be a `batchPostStep` so a four-change queue did not blink the desktop four times.
 
-`update every window` gets the same visible result with none of that: the preference is written
+`tell application "Finder" to update (target of every window)` — and, once tried, the
+per-window loop and the home-folder update — get the same visible result with none of
+that: the preference is written
 by the same unprivileged `defaults` call (so the durable truth is unchanged and
 `SystemStateReader.areHiddenFilesShown()` still reads it back), and running windows are asked to
-re-read it. Nothing is destroyed.
+re-read it. Nothing is destroyed. The chain exists because the single `update every window`
+script failed on 14.7.4 with AppleScript error `-1708`: the preference was written but
+open windows stayed stale. Each step runs inside its own `try`, the first success wins,
+and the winner is logged via `Trace.batch` (`SystemCommands.refreshFinderWindows()`).
+
+**When the whole chain fails** the preference is still written, so this is a success with
+a note rather than a failure: the user sees
+*"รีเฟรชไม่สำเร็จ กรุณากด ⌘⇧. ใน Finder หรือเปิดหน้าต่างใหม่ / Press ⌘⇧. in Finder or
+reopen the window"* in the status banner (`SystemCommands.finderRefreshFailedNote`).
 
 Because `batchPostStep` existed **only** to hold `killall Finder`, nothing sets it any more. The
 mechanism is retained in `FeatureCommand` — it is the only place in the batch runner that
@@ -315,8 +361,9 @@ Readable **without** elevation. This is the only feature that never prompts for 
   reported as **success with a note** and logged to `Trace`, never as a failure — because the
   setting really was applied. This is the one behavioural difference from the old `killall`
   version, which needed no such permission.
-- The `AppleShowAllFiles` key is a **per-user, per-Finder** preference. `update every window`
-  refreshes every open window at once, so they stay in agreement.
+- The `AppleShowAllFiles` key is a **per-user, per-Finder** preference. The refresh chain
+  tries all three steps in order, so every open window is refreshed by whichever step
+  reaches it first — windows stay in agreement.
 - If the key has never been written, `defaults read` returns an error rather than `0`. Treat
   "key absent" as OFF, and treat a read failure as "unknown" rather than defaulting to ON.
 - The app must not perform this write on app launch as a side effect of reading state.
@@ -469,8 +516,7 @@ ls /usr/libexec/oah/libRosettaRuntime
 
 ## 6. Spotlight Rebuild
 
-> **Queue:** ✅ Yes. ❌ No (immediate) for the menu-bar item and the
-> `rosettastone://rebuild-spotlight` URL action.
+> **Queue:** ✅ Yes. ❌ No (immediate) for the menu-bar item.
 
 ### Purpose
 Force macOS Spotlight to discard and rebuild its search index for the startup volume. Fixes
@@ -512,8 +558,7 @@ nothing to disable in the UI beyond the in-flight state.
 
 ## 7. DNS Flush
 
-> **Queue:** ✅ Yes. ❌ No (immediate) for the menu-bar item and the
-> `rosettastone://flush-dns` URL action.
+> **Queue:** ✅ Yes. ❌ No (immediate) for the menu-bar item.
 
 ### Purpose
 Clear the DNS resolver cache and restart the `mDNSResponder` (multicast DNS) daemon so the Mac
@@ -557,7 +602,7 @@ None — transient action button with no persistent state.
 
 > **Queue:** ✅ Yes. The confirmation dialog is raised at **stage** time — before the password
 > prompt — and remains *additional* to it, never a replacement. ❌ No (immediate) for the
-> menu-bar item and the `rosettastone://clear-cache` URL action, both of which confirm too.
+> menu-bar item, which confirms too.
 
 ### Purpose
 Delete the contents of the shared system cache directory at `/Library/Caches/`. The blunt
@@ -601,76 +646,30 @@ None — transient action button with no persistent state.
   Do not report a count of deleted files as a success metric.
 - Applications with running processes may hold open file handles to deleted files. Their
   behaviour is undefined until restarted — this is expected and must be communicated up front.
-- There is **no undo**. The app must never offer a "clear cache" action as part of any automated
-  or URL-scheme-driven flow without the same confirmation gate.
+- There is **no undo**. No automated surface may ever offer a "clear cache" action
+  without the same confirmation gate.
 
 ---
 
-## 9. URL-scheme actions
+## 9. URL-scheme actions — **removed (Phase 11.4)**
 
-Rosetta Stone registers the custom scheme `rosettastone://` via `CFBundleURLTypes`. This is the
-only automation surface, and it is what makes all seven Shortcuts actions work **cold** — with the
-app not running at all.
+This section used to register the custom scheme via `CFBundleURLTypes`
+and list seven actions (`open-app`, `toggle-gatekeeper`, `toggle-hidden-files`,
+`flush-dns`, `rebuild-spotlight`, `clear-cache`, `install-rosetta`) plus a cold-start
+queue (`AppDelegate.pendingURLs`, ceiling 10, `drainPendingURLs()`).
 
-### Mode gate: power-user mode only
+The whole surface was removed by owner decision: `URLActionRouter.swift` deleted, the
+`CFBundleURLTypes` block deleted from `Info.plist`, the AppKit open-URL plumbing
+(`application(_:open:)`, `handle(urls:)`, `enqueue`, `drainPendingURLs`, the
+`maxPendingURLs` ceiling, the `isReady` gate) removed from `AppDelegate`, the
+`URLActionHandling` conformance (and the URL-only `toggleGatekeeper()` coordinator entry
+point and `performDestructiveAction`) removed from `MenuBarController`, and every
+reference scrubbed from the docs. The in-app hotkeys (⌘Q ⌘W ⌘M ⌘D ⌘↩ ⌘⌫) and the
+programmatic main menu are untouched.
 
-URL actions belong to **mode B (Run at Startup ON)**. That is the mode in which the app is
-always running in the background, so Launch Services always finds a live instance.
-
-In **mode A (Run at Startup OFF, the default)** the app is not running in the background. If a
-`rosettastone://` URL arrives anyway — which cold-launches the app through Launch Services — the
-action is **refused**: the app logs it, shows the panel with a footer message (*“URL actions
-(rosettastone://) work only when Run at Startup is ON — turn it on to switch to menu-bar gadget
-mode.”*) and does not perform the action. Malformed/unknown URLs stay silent in every mode.
-
-This is deliberate: the default install must not be remotely actionable by URL. Turning Run at
-Startup ON is the explicit opt-in to the automation surface.
-
-### Registered actions
-
-These seven are the complete, exhaustive list. There is no eighth, and the set must match
-`README.md` §Shortcuts integration and `docs/USER-GUIDE.md` §9.1 exactly.
-
-| # | Action | Full URL | Maps to | Elevation |
-|---|--------|----------|---------|-----------|
-| 1 | `open-app` | `rosettastone://open-app` | Show + focus the main window | No |
-| 2 | `toggle-gatekeeper` | `rosettastone://toggle-gatekeeper` | Feature 2 | **Yes** (admin) |
-| 3 | `toggle-hidden-files` | `rosettastone://toggle-hidden-files` | Feature 3 | No |
-| 4 | `flush-dns` | `rosettastone://flush-dns` | Feature 7 | **Yes** (admin) |
-| 5 | `rebuild-spotlight` | `rosettastone://rebuild-spotlight` | Feature 6 | **Yes** (admin) |
-| 6 | `clear-cache` | `rosettastone://clear-cache` | Feature 8 — still confirms | **Yes** (admin) |
-| 7 | `install-rosetta` | `rosettastone://install-rosetta` | Feature 5 | **Yes** (admin) |
-
-There is deliberately **no** URL action for `run-at-startup` or `auto-boot`: both change boot and
-login behaviour, and driving them from an untrusted caller with no in-app confirmation would be
-unsafe.
-
-### Parsing rules
-
-- The action is the URL's **host** component: `rosettastone://flush-dns` → `flush-dns`.
-- Matching is **case-insensitive** (`FLUSH-DNS` works) but **never prefix-matched** —
-  `rosettastone://flush-dns-extra` must be rejected as unknown.
-- Query and path components are **ignored**, never honoured (`?force=1` is discarded, so an
-  injected parameter cannot escalate a harmless call into a dangerous one).
-- An unknown or malformed URL is logged and discarded. **No user-facing error.** A shortcut that
-  fires at 3 a.m. must never produce an alert nobody asked for.
-
-### Cold-start guarantee (mode B)
-
-All seven actions must work when the app is **not running** and Run at Startup is ON. Launch
-Services can deliver `application(_:open:)` before `applicationDidFinishLaunching` has finished
-building the status item, so:
-
-1. A URL that arrives early is **queued**, never dropped.
-2. The queue is drained immediately after the status item exists, on the main thread.
-3. The status item is guaranteed to exist **before** any queued action runs.
-4. The queue is a **plain array bounded at 10 entries** (`AppDelegate.maxPendingURLs`), with the
-   **oldest** entries dropped on overflow so the most recent intent survives; the drop is logged.
-   There is no re-dispatch on the path, so a queued URL cannot be lost and the drain cannot
-   re-enter itself.
-
-An action that is unavailable on the current CPU (`install-rosetta` on Intel, for example) is
-silently ignored, exactly as it is from the panel.
+(A doc-level proof note: the grep looks for the literal scheme host, which is why this
+file spells it `rosettastone` + `://` everywhere it must be mentioned. `CHANGELOG.md` is
+where the host survives as a historical record.)
 
 ---
 
@@ -776,10 +775,9 @@ decide which rows are toggles, which are one-shot buttons, and which are Quick T
 | 6 | Quick Tools — DNS | Button |
 | 6 | Quick Tools — Cache | Button |
 
-The display order is deliberately **not** `FeatureID.allCases`. `allCases` is the URL-scheme
-table and the order a deferred batch commits in; it answers "what does the router resolve",
-not "what does the user see". Pinning one to the other would make a cosmetic change a
-behaviour change.
+The display order is deliberately **not** `FeatureID.allCases`. `allCases` is the order a
+deferred batch commits in; it answers "what commits first", not "what the user sees".
+Pinning one to the other would make a cosmetic change a behaviour change.
 
 ### Keyboard shortcuts
 
@@ -804,15 +802,15 @@ left to a nib (see `AppDelegate.installMainMenu()`).
 | Feature | ON means |
 |---------|---------|
 | Run at Startup | The LaunchAgent plist exists — the app is a menu-bar gadget (mode B) |
-| Gatekeeper | **Gatekeeper is disabled** (inverted — ON = insecure state) |
+| Gatekeeper | **Gatekeeper is enforcing** (Phase 11.4 — ON = protected; the old inverted meaning is gone) |
 | Hidden Files | **Hidden files are shown** (inverted vs. the system default) |
 ### 10.4 Which actions are queued
 
 | Feature | Queued? | Notes |
 |---------|---------|-------|
 | 1. Run at Startup | ✅ | Batched as **inline** work — no shell, no elevation, because the plist lives in the user's own `~/Library` |
-| 2. Gatekeeper | ✅ | macOS 15+ opens System Settings **after** a successful batch |
-| 3. Hidden Files | ✅ | `killall Finder` runs **once per batch**, not once per row |
+| 2. Gatekeeper | ✅ | ON = enforce, OFF = bypass. macOS 15+ opens System Settings **after** a successful batch (and only when the fresh read agrees the machine is bypassed) |
+| 3. Hidden Files | ✅ | Ordered AppleScript refresh chain runs inline, once per batch |
 | 4. Auto Boot | ✅ | Re-checked at apply time; a locked row is refused rather than written |
 | 5. Rosetta 2 | ✅ | "May take several minutes" is warned at **stage** time, before the password prompt |
 | 6. Spotlight Rebuild | ✅ | — |
@@ -821,13 +819,12 @@ left to a nib (see `AppDelegate.installMainMenu()`).
 
 ### 10.5 What deliberately bypasses the queue
 
-Three routes run **immediately** and never touch `pendingChanges`:
+Two routes run **immediately** and never touch `pendingChanges`:
 
 | Route | Why |
 |-------|-----|
-| Menu-bar **left-click** → Gatekeeper | A single deliberate action; a queue would mean the user had to press Apply for one toggle. One password prompt, as before. |
+| The mini panel's **OK** → Gatekeeper staged change, committed as its own batch | Still one queue, one lock, one password prompt. |
 | Menu-bar **right-click** menu items | Shortcuts, not batch configuration. |
-| `rosettastone://` URL actions | Driven by Apple Shortcuts at arbitrary times — often with no panel on screen at all. Staging a change nobody will ever press Apply for would be a silently-dropped action. |
 
 The rationale: the queue exists to make *configuring several things at once* cheap. A shortcut is
 already a single explicit command, so deferring it adds a step and buys nothing.

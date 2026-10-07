@@ -12,6 +12,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 The first working build. Application code, the XcodeGen project specification and the CI
 pipeline now exist and both matrix legs build green on GitHub Actions.
 
+### Phase 11.4 — Truth-first state sync, Gatekeeper mapping, Finder refresh chain; remove URL-scheme shortcuts and status dot
+
+**The app now reads truth before it writes, the Gatekeeper toggle is locked to one mapping, and Finder refresh survives macOS 14.** The URL-scheme Shortcuts surface and the header status dot are gone by owner decision; hotkeys remain.
+
+#### Changed
+
+- **Truth-first resync triggers.** `loadState()` now funnels every read through five explicit triggers — launch, app/window didBecomeActive, after Apply, after CANCEL (main and mini panel), and after every single-operation terminal state — so the panel always shows reality, not a stale cache (`FeatureCoordinator.loadState`, `SystemStateReader.isGatekeeperBypassed`).
+- **Gatekeeper mapping locked to one table.** `SystemCommands.gatekeeperShell(enabling:)` is the single source of truth: **ON → `--master-enable`**, **OFF → `--master-disable`**. The off-Mac harness asserts both directions plus two anti-inversion checks (`tests/MacProfileTests.testGatekeeperPendingCommandTable`).
+- **macOS 15+ Settings flow gated on parsed truth.** The System Settings deep link and confirmation toast only appear when `spctl --status` parses to `bypassed == true`; a nil/unknown read never triggers it (`GatekeeperState.resolve`, `GatekeeperPolicy.settingsURL`).
+- **Finder refresh is an ordered 3-step chain.** `refreshFinderWindows()` tries (1) `update (target of every window)`, (2) per-window `try update (target of w)`, (3) `update (path to home folder)` — each in its own `try`, each logged via `Trace.batch`; first success wins. All-fail returns a Thai+English note suggesting ⌘⇧ (`SystemCommands.finderRefreshFailedNote`).
+
+#### Removed
+
+- **URL-scheme Apple Shortcuts (owner decision).** `URLActionRouter.swift` deleted; `CFBundleURLTypes` block removed from `Info.plist`; `AppDelegate` no longer implements `application(_:open:)`, keeps no `pendingURLs` queue, no `maxPendingURLs` ceiling, no `drainPendingURLs()`. The seven Shortcuts actions are gone; in-app hotkeys ⌘Q ⌘W ⌘M ⌘D ⌘↩ ⌘⌫ are retained.
+- **Gatekeeper status dot.** `GatekeeperStatusDot` deleted from both panel headers. The row itself answers the state question; an unreadable `spctl --status` now shows the grey "unknown" tooltip (`GatekeeperPolicy.unknownTooltip`) instead of a dot that could be mistaken for a claim.
+
+#### Fixed
+
+- **`spctl --status` stdout discarded on exit≠0.** The owner's 14.7.4 capture showed `exit=1 raw=[assessments disabled]` on an already-bypassed machine. The old reader gated on `exit == 0`, threw the stdout away, published `nil`, and silently suppressed the macOS 15+ confirmation gate. Parsing is now driven by text only; the exit code is logged for diagnostics and otherwise ignored (`SystemStateReader.parseSpctlStatus`, 9 harness assertions cover both strings × both exits + garbage/empty/case/newline).
+- **Finder refresh -1708 on macOS 14.** The Phase 11 single `tell application "Finder" to update every window` failed with AppleScript error `-1708` ("every window doesn't understand the update message"). The ordered chain works around it; losing steps are pruned after owner field sign-off.
+
+#### Notes
+
+- Refresh-chain losers pruned after owner field sign-off on 14.7.4 and 26.
+- `[RS-BATCH]` trace channel kept alive for the owner's Console filter.
+
 ### Phase 11 — UI/UX overhaul + mini app mode
 
 **The menu-bar gadget grew a real interface, and the panel stopped contradicting itself.** Three

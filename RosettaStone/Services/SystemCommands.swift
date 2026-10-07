@@ -57,6 +57,28 @@ enum SystemCommands {
         majorVersion >= 15
     }
 
+    /// The path to `spctl` for the **write** paths. (Reads keep their own constant in
+    /// `SystemStateReader.Tool`, which is deliberately a different table — readers and
+    /// writers never share a code path.)
+    static let spctlTool = "/usr/sbin/spctl"
+
+    /// The pending→command table for the Gatekeeper row — the **one** mapping, owner
+    /// verified in Phase 11.4:
+    ///
+    /// | Row (toggle) | Meaning  | Command                        |
+    /// |--------------|----------|--------------------------------|
+    /// | **ON**       | enforce  | `/usr/sbin/spctl --master-enable`  |
+    /// | **OFF**      | bypass   | `/usr/sbin/spctl --master-disable` |
+    ///
+    /// Both write routes — the deferred-queue builder
+    /// (`FeatureCoordinator.command(for:pending:)`) and the immediate path
+    /// (`FeatureCoordinator.writeGatekeeper`) — call this function, so they cannot drift
+    /// into inverting each other, and the off-Mac harness copies it verbatim to assert the
+    /// table (`tests/MacProfileTests.swift`). Never invert this at a call site.
+    static func gatekeeperShell(enabling: Bool) -> String {
+        "\(spctlTool) --master-\(enabling ? "enable" : "disable")"
+    }
+
     // MARK: - Unprivileged execution
 
     /// Runs an executable directly — no `sh -c`, so nothing is re-interpreted.
@@ -389,7 +411,7 @@ enum SystemCommands {
         }
     }
 
-    /// AppleScript that makes Finder re-read its preferences **without restarting**.
+    /// AppleScript steps that make Finder re-read its preferences **without restarting**.
     ///
     /// ## Why not `killall Finder`
     ///
@@ -398,82 +420,121 @@ enum SystemCommands {
     /// every Finder window lives in, so the Dock and desktop blink out and back, every
     /// window's scroll position and open-tab state is lost, and anything mid-download in a
     /// window restarts. That is a large, visible side effect for a boolean preference.
+    /// `killall` must never come back.
     ///
-    /// ## Why AppleScript instead of a Finder restart
+    /// ## The ordered refresh chain (Phase 11.4)
     ///
-    /// `NSAppleScript` is the only supported way to make a *running* Finder act on a changed
-    /// preference. `update every window` tells each window to re-read the setting, so the
-    /// change is visible immediately and nothing is destroyed.
+    /// The Phase 11 single script — `tell application "Finder" to update every window` —
+    /// failed on the owner's 14.7.4 machine with AppleScript error `-1708` ("every window
+    /// doesn't understand the update message"): the preference was written (read-back
+    /// confirmed) but open windows stayed stale. The refresh is now an **ordered chain of
+    /// three steps**, each executed inside its own `try`, first success wins:
     ///
-    /// Two details that are load-bearing:
+    /// 1. `tell application "Finder" to update (target of every window)`
+    /// 2. a per-window loop — `repeat with w in windows`, each body wrapped in its own
+    ///    `try update (target of w)` so one broken window cannot abort the rest
+    /// 3. `tell application "Finder" to update (path to home folder)`
     ///
-    /// 1. **`update every window` is required.** Setting `AppleShowAllFiles` alone changes
-    ///    the preference but leaves open windows showing stale content; the update is what
-    ///    makes it visibly take effect. Skipping it produces a toggle that "did nothing".
-    /// 2. **Automation permission.** Controlling Finder is a TCC-protected operation, so on
-    ///    a first run macOS may prompt for permission to "control Finder". The prompt is
-    ///    honest about what is being asked and declining it does not break the toggle — the
-    ///    preference is still written, and a Finder launched later will honour it. A refusal
-    ///    is therefore reported as success-with-a-note rather than as a failure, because the
-    ///    setting really was applied.
+    /// The winning step is logged through `Trace.batch`, and so is each loser with its full
+    /// error dictionary (a TCC refusal `-1743` and a genuinely missing Finder window must
+    /// stay separable in the log). A follow-up commit prunes the losing steps after the
+    /// owner field-verifies the winner on 14.7.4 and on 26. No step restarts Finder and no
+    /// step needs a password.
     ///
-    /// Returned as an optional error rather than thrown: the caller needs to distinguish
-    /// "AppleScript was refused" from "the process could not start", and both are outcomes
-    /// worth logging rather than crashing on.
+    /// ## Automation permission (unchanged)
+    ///
+    /// Controlling Finder is a TCC-protected operation, so on a first run macOS may prompt
+    /// for permission to "control Finder". The prompt is honest about what is being asked
+    /// and declining it does not break the toggle — the preference is still written, and a
+    /// Finder launched later will honour it. When *all* three steps fail the caller
+    /// therefore reports **success with a note** (`finderRefreshFailedNote`) rather than a
+    /// failure, because the setting really was applied.
+    ///
+    /// - Returns: `nil` when a step refreshed Finder; the Thai+English note when every
+    ///   step failed.
     private static func refreshFinderWindows() -> String? {
-        let source = """
-        tell application "Finder"
-            update every window
-        end tell
-        """
-        // (3c) The exact source handed to NSAppleScript. A blank/empty `source` here would be
-        // the single most explanatory line in the whole log: it would mean the Finder-refresh
-        // branch never ran, which matches "no Automation permission prompt ever appeared".
-        Trace.batch("hiddenFiles: AppleScript source >>>[\(Trace.escaped(source))]<<<")
-        guard let script = NSAppleScript(source: source) else {
-            Trace.batch("hiddenFiles: NSAppleScript(source:) returned nil — the source did not compile")
-            return "Finder's AppleScript could not be compiled."
-        }
-        var errorInfo: NSDictionary?
-        // `executeAndReturnError` rather than `executeAndReturnResult`: we care whether the
-        // tell block succeeded, not what it returned.
-        let returned = script.executeAndReturnError(&errorInfo)
-        // (3d) The full error dictionary, not just its message. The message alone hides the
-        // two failure modes that look identical from the outside: a TCC refusal
-        // (`-1743 not authorized`) and a genuinely missing Finder window, and they call for
-        // completely different conclusions about whether the preference was written at all.
-        if let errorInfo = errorInfo {
-            Trace.batch("hiddenFiles: AppleScript errorInfo=[\(Trace.escaped(String(describing: errorInfo)))]")
-        } else {
+        let steps: [(name: String, source: String)] = [
+            ("every-window", """
+            tell application "Finder" to update (target of every window)
+            """),
+            ("per-window-loop", """
+            tell application "Finder"
+                repeat with w in windows
+                    try
+                        update (target of w)
+                    end try
+                end repeat
+            end tell
+            """),
+            ("home-folder", """
+            tell application "Finder" to update (path to home folder)
+            """)
+        ]
+
+        for step in steps {
+            // (3c) The exact source handed to NSAppleScript, per step. An empty source here
+            // would be the single most explanatory line in the whole log: it would mean the
+            // Finder-refresh branch never ran, which matches "no Automation permission
+            // prompt ever appeared".
+            Trace.batch("hiddenFiles: refresh step [\(step.name)] source >>>[\(Trace.escaped(step.source))]<<<")
+            guard let script = NSAppleScript(source: step.source) else {
+                Trace.batch("hiddenFiles: refresh step [\(step.name)] — NSAppleScript(source:) returned nil (the source did not compile)")
+                continue
+            }
+            var errorInfo: NSDictionary?
+            // `executeAndReturnError` rather than `executeAndReturnResult`: we care whether
+            // the tell block succeeded, not what it returned.
+            let returned = script.executeAndReturnError(&errorInfo)
+            // (3d) The full error dictionary, not just its message. The message alone hides
+            // the two failure modes that look identical from the outside: a TCC refusal
+            // (`-1743 not authorized`) and a genuinely missing Finder window, and they call
+            // for completely different conclusions about whether the preference was written
+            // at all. A step that fails is logged and the chain moves on to the next one.
+            if let errorInfo = errorInfo {
+                Trace.batch("hiddenFiles: refresh step [\(step.name)] FAILED errorInfo=[\(Trace.escaped(String(describing: errorInfo)))]")
+                continue
+            }
             // Plain `.stringValue`, not `?.`: on macOS `executeAndReturnError` returns a
             // **non-optional** `NSAppleEventDescriptor`, so optional chaining is a compile
-            // error there. (`NSAppleScript` succeeded at that point in any case — the branch
+            // error there. (`NSAppleScript` succeeded at this point in any case — the branch
             // is only reached when the error dictionary is nil.)
-            Trace.batch("hiddenFiles: AppleScript returned=\(Trace.escaped(returned.stringValue ?? "<no string value>")) errorInfo=nil — Finder refreshed")
+            Trace.batch("hiddenFiles: refresh step [\(step.name)] WON — Finder refreshed"
+                        + " returned=[\(Trace.escaped(returned.stringValue ?? "<no string value>"))]")
+            return nil
         }
-        if let errorInfo = errorInfo, let message = errorInfo[NSAppleScript.errorMessage] as? String {
-            Trace.batch("hiddenFiles: AppleScript declined — \(Trace.escaped(message))")
-            return message
-        }
-        Trace.batch("hiddenFiles: Finder refresh confirmed (no error)")
-        return nil
+
+        Trace.batch("hiddenFiles: every refresh step failed — the preference is written, open windows stay stale")
+        return finderRefreshFailedNote
     }
+
+    /// The success-with-note text shown when the preference was written but no refresh
+    /// step could reach Finder (Phase 11.4).
+    ///
+    /// Thai first (owner-mandated copy), English second — the same pairing as the other
+    /// owner-owned strings. Surfaced through the status banner on both commit routes
+    /// (panel batch and immediate menu action), never as a failure: the setting really was
+    /// applied, only the visible refresh did not happen.
+    static let finderRefreshFailedNote =
+        "รีเฟรชไม่สำเร็จ กรุณากด ⌘⇧. ใน Finder หรือเปิดหน้าต่างใหม่ / Press ⌘⇧. in Finder or reopen the window"
 
     /// Shows or hides dotfiles in Finder, **without restarting Finder**.
     ///
     /// This is feature 3's single write path, called identically from the panel's deferred
-    /// queue, the menu-bar item and the URL scheme — there is exactly one implementation, so
-    /// the three routes cannot drift (the same reason `FeatureCoordinator.command(for:pending:)`
-    /// is the one command table).
+    /// queue and the menu-bar item — there is exactly one implementation, so the routes
+    /// cannot drift (the same reason `FeatureCoordinator.command(for:pending:)` is the one
+    /// command table).
     ///
     /// The preference write is still `defaults`, deliberately: it is unprivileged, it is the
     /// same key `SystemStateReader.areHiddenFilesShown()` reads back, and it keeps the
-    /// durable truth independent of Finder being scriptable. The AppleScript is layered on
-    /// afterwards purely to make running windows notice.
+    /// durable truth independent of Finder being scriptable. The ordered AppleScript chain
+    /// (`refreshFinderWindows()`) is layered on afterwards purely to make running windows
+    /// notice.
     ///
     /// - Parameter shown: `true` reveals dotfiles, matching the row's ON == shown semantics.
-    /// - Returns: success when the preference was written, even if Finder could not be
-    ///   refreshed — see point 2 above. A failure is returned only when the *write* failed.
+    /// - Returns: success with an **empty** output when a refresh step reached Finder;
+    ///   success carrying `finderRefreshFailedNote` when the preference was written but the
+    ///   whole chain failed — a note, never a failure, because the setting really was
+    ///   applied. A failure is returned only when the *write* failed.
     static func setHiddenFilesShown(_ shown: Bool) -> CommandOutcome {
         Trace.batch("hiddenFiles: begin shown=\(shown)")
         let command = "\(finderDefaultsTool) write com.apple.finder AppleShowAllFiles "
@@ -497,13 +558,14 @@ enum SystemCommands {
             return write
         }
 
-        Trace.batch("hiddenFiles: write succeeded — attempting the Finder refresh (3c/3d below)")
+        Trace.batch("hiddenFiles: write succeeded — attempting the ordered Finder refresh chain")
         if let problem = refreshFinderWindows() {
             // The preference is written and will apply to the next Finder window, so this is
-            // a success with a caveat rather than a failure. Logged so Diagnostics can show it.
-            Trace.log("hidden files: preference written, Finder refresh declined (\(problem))")
-            Trace.batch("hiddenFiles: end success-with-note refreshDeclined=[\(Trace.escaped(problem))]")
-            return .success(output: "Finder windows were not refreshed (\(problem)).")
+            // a success with a note rather than a failure. `problem` is the Thai+English
+            // note itself; the caller surfaces it through the status banner.
+            Trace.log("hidden files: preference written, Finder refresh chain exhausted (\(problem))")
+            Trace.batch("hiddenFiles: end success-with-note refresh=all-steps-failed")
+            return .success(output: problem)
         }
         Trace.batch("hiddenFiles: end success refresh=ok")
         return .success(output: "")

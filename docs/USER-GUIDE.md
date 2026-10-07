@@ -196,7 +196,7 @@ The window is dark-themed and laid out top to bottom as follows.
 
 | Row | Control | What it does |
 |-----|---------|--------------|
-| **Gatekeeper** | Toggle | Disable / re-enable macOS Gatekeeper |
+| **Gatekeeper** | Toggle (ON = enforce) | Disable / re-enable macOS Gatekeeper |
 | **Auto Boot** | Toggle | Power on automatically — **Intel MacBook only** |
 | **Hidden Files** | Toggle | Show / hide dotfiles in Finder |
 | **Run at Startup** | Toggle | Switch modes: install / remove the login item and the menu-bar icon |
@@ -208,10 +208,12 @@ The window is dark-themed and laid out top to bottom as follows.
 > **Reordered in Phase 11.** Gatekeeper and Hidden Files now lead, and **Run at Startup moved
 > down to fourth** so the switch that changes the app's entire mode is not the first thing under
 > your cursor.
-
-Next to the title in the header there is a **status dot** — 🟢 green when Gatekeeper is doing
-its job, 🔴 red when it has been disabled, ⚪️ grey when the state could not be read. It is there
-so you can check the most security-relevant fact about your Mac without reading any row.
+>
+> > **Changed in Phase 11.4.** The status dot that used to sit next to the title
+> > (🟢 active / 🔴 bypassed / ⚪️ unreadable) is gone, by owner decision. The Gatekeeper
+> > row itself shows the real value; when the state cannot be read the row shows a grey
+> > *"อ่านสถานะ Gatekeeper ไม่ได้ / Cannot read Gatekeeper state"* tooltip instead, and
+> > stays fully usable.
 
 ### The menu-bar icon (power-user mode only)
 
@@ -237,8 +239,8 @@ A small window (300 × 372 pt) that appears under the menu-bar glyph.
 
 | Element | What it is |
 |---------|-----------|
-| Header | Title, the Gatekeeper status dot, and a ✕ close button |
-| **Gatekeeper** | Toggle — allow apps from anywhere |
+| Header | Title and a ✕ close button (the Gatekeeper status dot was removed in Phase 11.4) |
+| **Gatekeeper** | Toggle — **ON = enforcing**, OFF = allow apps from anywhere |
 | **Hidden Files** | Toggle — show dotfiles in Finder |
 | **Run at Startup** | Toggle — the mode switch itself |
 | **Open Main App** | Opens the full panel |
@@ -321,9 +323,8 @@ This toggle does two things at once: it installs a login item at
 | At launch | panel opens | starts hidden |
 | Dock icon | yes | no |
 | Menu-bar icon | none | always |
-| Left-click the icon | — | toggles Gatekeeper directly |
+| Left-click the icon | — | opens the mini panel |
 | Right-click the icon | — | full menu |
-| `rosettastone://` actions | refused (the app is not running in the background) | all seven work |
 
 Both directions take effect **immediately** — no relaunch:
 
@@ -343,20 +344,24 @@ Both directions take effect **immediately** — no relaunch:
 
 ### 6.2 Gatekeeper
 
-**ON means Gatekeeper is bypassed** — the less secure state. This is intentional: the switch shows
-what you have actually disabled rather than a vague "on".
+> **Changed in Phase 11.4 (owner-verified).** The toggle reads straight now:
+> **ON = enforcing**, **OFF = bypassed**. Up to Phase 11 it was inverted (ON = bypassed).
 
 | Switch | Meaning |
 |--------|---------|
-| OFF | Gatekeeper is active and evaluating every app you open (recommended) |
-| ON | Gatekeeper's master switch is disabled — unsigned software runs without warnings |
+| ON | Gatekeeper is active and evaluating every app you open (recommended) |
+| OFF | Gatekeeper's master switch is bypassed — unsigned software runs without warnings |
 
 - Requires your administrator password.
-- **On macOS 15 Sequoia and later, turning it ON is a two-step procedure.** After the password
-  prompt, Rosetta Stone opens **System Settings → Privacy & Security** and shows a confirmation
-  dialog: *"กรุณาเลือก 'Anywhere' ใน System Settings เพื่อยืนยันการปิด Gatekeeper"*. Choose
-  **Anywhere** under *Allow applications from* to complete the change. Turning it OFF is always a
-  single step.
+- **On macOS 15 Sequoia and later, turning it OFF is a two-step procedure.** After the
+  password prompt, Rosetta Stone opens **System Settings → Privacy & Security** and shows
+  a confirmation dialog: *"กรุณาเลือก 'Anywhere' ใน System Settings
+  เพื่อยืนยันการปิด Gatekeeper"*. Choose **Anywhere** under *Allow applications from*
+  to complete the change — the app never claims success before you do. Turning it ON is
+  always a single step.
+- When `spctl --status` cannot be parsed (a managed machine, an MDM profile), the row
+  keeps working and shows a grey *"อ่านสถานะ Gatekeeper ไม่ได้ / Cannot read Gatekeeper
+  state"* tooltip — an unknown is never rendered as either direction.
 - If your Mac is managed by your employer or school, this setting may be enforced by policy and
   will switch itself back on. Rosetta Stone re-reads the real state after every change, so the
   switch will snap back to reflect reality.
@@ -465,92 +470,25 @@ it added.
 
 ---
 
-## 9. Apple Shortcuts
+## 9. Shortcuts integration — **removed (Phase 11.4)**
 
-Rosetta Stone can be driven from Apple Shortcuts through its `rosettastone://` URL scheme. This lets
-you put a system action on a keyboard shortcut, a Siri voice command, or an automation.
+Up to Phase 11 this app could be driven from Apple Shortcuts through a custom URL
+scheme and a seven-action table (`open-app`, `toggle-gatekeeper`, `toggle-hidden-files`,
+`flush-dns`, `rebuild-spotlight`, `clear-cache`, `install-rosetta`) with a cold-start
+queue. **That surface is gone, by owner decision.**
 
-> **Power-user mode required.** URL actions only work while **Run at Startup** is ON (§6.1). In the
-> default mode the app is not running in the background, so a URL is refused and the panel opens
-> with an explanation.
+What changed in the app:
 
-### 9.1 The action list
+- `URLActionRouter.swift` deleted; the `CFBundleURLTypes` block deleted from `Info.plist`.
+- `AppDelegate` no longer implements `application(_:open:)`, keeps no `pendingURLs`
+  queue, no `maxPendingURLs` ceiling, and no `drainPendingURLs()` — there is nothing
+  left to queue or drain.
+- The `URLActionHandling` conformance (and the URL-only `toggleGatekeeper()`) is gone
+  from `MenuBarController`.
 
-| Action | URL | Password? | Works on |
-|--------|-----|----------|----------|
-| Open the app | `rosettastone://open-app` | No | All |
-| Toggle Gatekeeper | `rosettastone://toggle-gatekeeper` | Yes | All |
-| Toggle Hidden Files | `rosettastone://toggle-hidden-files` | No | All |
-| Flush DNS | `rosettastone://flush-dns` | Yes | All |
-| Rebuild Spotlight | `rosettastone://rebuild-spotlight` | Yes | All |
-| Clear system cache | `rosettastone://clear-cache` | Yes (plus a confirmation) | All |
-| Install Rosetta 2 | `rosettastone://install-rosetta` | Yes | Apple Silicon only |
-
-An action that does not apply to your Mac — `install-rosetta` on an Intel Mac, for example — is
-silently ignored. No error, no alert. So is an unknown URL. A **recognised** action sent while
-**Run at Startup** is OFF is *deliberately refused*: the panel opens and the footer explains that
-the power-user mode is required.
-
-### 9.2 Build a shortcut
-
-1. Open **Shortcuts** (built into macOS, in Applications → Utilities).
-2. Click **+** to create a new shortcut.
-3. On the right, search for and add the action **Open URLs**.
-4. Replace the example URL with one from the table above, for example
-   `rosettastone://flush-dns`.
-5. Give the shortcut a name, e.g. **Flush DNS**.
-6. Click the ⌘ icon at the top of the shortcut window to assign a keyboard shortcut.
-
-To try it immediately, click the ▶ button at the top of the Shortcuts window.
-
-### 9.3 Example shortcuts
-
-| Shortcut name | URL | Suggested use |
-|---------------|-----|---------------|
-| Show/Hide Hidden Files | `rosettastone://toggle-hidden-files` | Bind to ⌘⇧. — the classic dotfile key |
-| Flush DNS | `rosettastone://flush-dns` | Run from a terminal-adjacent workflow after switching VPN |
-| Open Main Window | `rosettastone://open-app` | Power-user mode: show the panel without touching the glyph |
-| Rebuild Spotlight | `rosettastone://rebuild-spotlight` | Run overnight, e.g. at 2 a.m. |
-| Install Rosetta 2 | `rosettastone://install-rosetta` | One-time setup, Apple Silicon only |
-
-### 9.4 Test from Terminal first
-
-Before building a shortcut, confirm the URL works:
-
-```bash
-open "rosettastone://open-app"
-```
-
-`open-app` is the safest test: it has no side effects. If the app window appears, the URL scheme is
-registered correctly and the rest will work too.
-
-### 9.5 Use it from a shell script
-
-```bash
-#!/bin/bash
-# Rebuild Spotlight only when the battery is above 50%
-if [ "$(pmset -g batt | awk '/Battery/ {print int($2*100)}')" -gt 50 ]; then
-  open "rosettastone://rebuild-spotlight"
-fi
-```
-
-### 9.6 Use it with Alfred or Raycast
-
-Both can run a plain shell command. Set the command to:
-
-```bash
-open "rosettastone://flush-dns"
-```
-
-### 9.7 Automation notes
-
-| Consideration | Detail |
-|---------------|--------|
-| Password prompts | Any action marked *Yes* above still raises the macOS password dialog, even when triggered by an automation. macOS has no way to pre-authorise a GUI script, so your automation will pause until you type your password. |
-| Background execution | In power-user mode, an action triggered while the app is closed cold-launches it into the background — **no window appears**. That is intentional. The action is queued and runs as soon as the app finishes starting, so a cold start works exactly like a warm one. In the default mode the URL is refused instead. |
-| Silent success | Nothing pops up to tell you it worked. Check the toggle state, or add a `Notify` action in Shortcuts if you want feedback. |
-| Destructive actions | `clear-cache` keeps its confirmation dialog even when driven by a URL. Automating it requires you to click **Confirm** each time. |
-| Duplicating actions | Toggling actions flip state. Do not put `toggle-gatekeeper` in a shortcut that runs repeatedly — use it deliberately. |
+What did **not** change: every in-app hotkey (⌘Q ⌘W ⌘M ⌘D ⌘↩ ⌘⌫) and the programmatic
+main menu. There is no external trigger surface any more — if you want an action on a
+hotkey, drive the app's window from the keyboard and stage it in the queue.
 
 ---
 
@@ -582,7 +520,7 @@ machine.
 | No menu-bar icon even in power-user mode | Check **System Settings → Menu Bar → Rosetta Stone → Allow in the Menu Bar** — macOS 26 Tahoe and later let you hide a third-party status item. (ถ้าไอคอนไม่โผล่ ไปที่ System Settings → Menu Bar → หา Rosetta Stone → เปิดสวิตช์ Allow in the Menu Bar.) **Diagnostics…** also reports whether AppKit considers the item visible at all. |
 | Nothing at all appears at launch | The default mode opens the panel at launch (§4.4). If it did not, check **Diagnostics…**. |
 | App does not start at login | Toggle **Run at Startup** off, then on again, then log out and back in. **Diagnostics…** shows whether the login item is installed and whether it is stale. |
-| A Shortcut did nothing | URL actions require **Run at Startup ON** (§9). With the toggle off, the panel opens and says so. In power-user mode, actions perform silently once running — see §9.7. |
+| A Shortcut did nothing | There is no external trigger surface any more (the URL scheme was removed in Phase 11.4 — see §9). Drive the panel from the keyboard instead. |
 | Gatekeeper did not switch off on macOS 15+ | On Sequoia/Tahoe you must also choose **Anywhere** in System Settings; the app opens the pane and reminds you (§6.2). |
 | Password prompt never appears | Check that a previous `osascript` dialog is not hidden behind another window. Only one privileged action runs at a time — and the Apply button commits everything with a **single** prompt (§12). |
 | "Operation not permitted" | You cancelled the prompt, or the command needs root and did not get it. Press **OK** again — cancelling leaves your queue intact (§12.5). |
@@ -633,13 +571,12 @@ All eight panel rows are queued, including the one-shot buttons (Rosetta 2, Spot
 Clear System Cache). Pressing **Install** or **Cache** does not start the work; it queues it and
 shows you the warning first.
 
-Three things deliberately **do not** queue, and run the instant you trigger them:
+Two things deliberately **do not** queue, and run the instant you trigger them:
 
 | Action | Why |
 |--------|-----|
-| **Left-clicking the menu-bar icon** | One deliberate toggle. It raises one password prompt, exactly as before. |
 | **The right-click menu** | These are shortcuts, not a batch. |
-| **Apple Shortcuts / `rosettastone://` URLs** | These can fire at any time, often with no panel on screen. Queuing a change nobody will press Apply for would silently do nothing. |
+| **The mini panel's OK** | It commits its own queue as a mini batch — still staged, one lock, one password prompt. |
 
 ### 12.4 Confirmations still happen first
 

@@ -1,6 +1,6 @@
 import Foundation
 
-/// Lifecycle tracing for every startup and URL step.
+/// Lifecycle tracing for every startup and resync step.
 ///
 /// ## Why plain `NSLog`
 ///

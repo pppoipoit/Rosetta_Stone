@@ -27,13 +27,10 @@ import AppKit
 ///   `WindowGroup` would create a second, unmanaged window and a menu-bar "Show" item
 ///   it does not want. `Settings` provides a legal, invisible scene that keeps the
 ///   SwiftUI lifecycle satisfied.
-/// - `onOpenURL` is available from macOS 11, which is why the 10.15 path routes URLs
-///   through `application(_:open:)` in the delegate instead.
 @available(macOS 11.0, *)
 struct RosettaStoneApp: App {
 
-    /// Boots the AppKit side of the app: the status item, the panel window and the
-    /// URL-scheme handler.
+    /// Boots the AppKit side of the app: the status item and the panel window.
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
 
     var body: some Scene {
@@ -44,13 +41,10 @@ struct RosettaStoneApp: App {
             // it never creates a visible window.
             EmptyView()
         }
-        // NOTE: no `.onOpenURL` here. On macOS, SwiftUI delivers URLs to a scene through
-        // `handlesExternalEvents(matching:)`, not through the `onOpenURL(_:)` modifier that
-        // iOS provides — calling `onOpenURL` on a macOS `Settings` scene does not compile.
-        // URL delivery is handled in AppKit instead: `AppDelegate` implements
-        // `application(_:open:)`, which is the canonical AppKit entry point for
-        // `rosettastone://` URLs on every macOS version from 10.15 upward. That single path
-        // therefore serves both the 10.15 entry point and this one, so there is no second
-        // delivery route to keep in sync.
+        // NOTE: no `.onOpenURL` here. On macOS, SwiftUI delivers external URLs to a scene
+        // through `handlesExternalEvents(matching:)`, not through the `onOpenURL(_:)`
+        // modifier that iOS provides — calling `onOpenURL` on a macOS `Settings` scene
+        // does not compile. The app also no longer registers any URL scheme of its own
+        // (removed in Phase 11.4), so there is no external entry point to wire up at all.
     }
 }

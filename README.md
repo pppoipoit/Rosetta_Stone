@@ -26,9 +26,9 @@ Design constraints that shape everything:
 - **Zero onboarding / no account / no telemetry.** Nothing is uploaded. Nothing is tracked.
 - **Two modes, one toggle.** *Run at Startup* **OFF** (the default) is a normal windowed app
   with a Dock icon and no menu-bar icon. **ON** is the power-user mode: a hidden-window
-  `LSUIElement` menu-bar gadget — left-click toggles Gatekeeper, right-click opens the full
-  menu, and all seven URL actions work. Flipping the toggle switches posture live, with no
-  relaunch.
+  `LSUIElement` menu-bar gadget — left-click opens the mini panel, right-click opens the full
+  menu, and ⌘Q ⌘W ⌘M ⌘D ⌘↩ ⌘⌫ are the only keyboard surface. Flipping the toggle switches
+  posture live, with no relaunch.
 - **Broad OS floor.** It must run on macOS 10.15, which rules out modern-only frameworks.
 
 ---
@@ -57,7 +57,7 @@ Design constraints that shape everything:
 > commits the whole queue with **one** password dialog for every privileged row (⌘↩ on macOS 11+);
 > **CANCEL** discards it. An **orange ●** rides **on the switch** of any row that is staged but not
 > yet applied. **OK always empties the queue**, whether it succeeded or not — failures are listed
-> in a per-item dialog instead. Menu-bar clicks and `rosettastone://` URL actions bypass the queue
+> in a per-item dialog instead. Menu-bar clicks and the mini panel's OK bypass the queue
 > and run immediately, because they are shortcuts rather than batch configuration.
 
 ### UI layout (row order)
@@ -237,33 +237,14 @@ For distribution, see [docs/CI-CD.md](docs/CI-CD.md) and the ad-hoc signing ADR 
 
 ## Shortcuts integration
 
-Rosetta Stone registers the custom URL scheme `rosettastone://`, which can be driven from Apple
-Shortcuts, Alfred, Raycast, or a shell script.
+The URL-scheme Shortcuts surface (`rosettastone://…`) was **removed in Phase 11.4** by owner
+decision; it is not part of this build. The in-app hotkeys (⌘Q ⌘W ⌘M ⌘D ⌘↩ ⌘⌫) are the only
+keyboard surface, and the main menu carries the same actions: `Toggle Gatekeeper`, `Toggle
+Hidden Files`, `Flush DNS`, `Rebuild Spotlight index`, `Clear System Cache`, `Install Rosetta
+2` and `Run at Startup`.
 
-> **Requires the power-user mode.** URL actions run only while **Run at Startup** is ON (the
-> menu-bar gadget). In the default mode the app is not running in the background, so the URLs
-> are refused and the panel explains why.
-
-| Action | URL |
-|--------|-----|
-| Open the app window | `rosettastone://open-app` |
-| Toggle Gatekeeper | `rosettastone://toggle-gatekeeper` |
-| Toggle Hidden Files | `rosettastone://toggle-hidden-files` |
-| Flush DNS | `rosettastone://flush-dns` |
-| Rebuild Spotlight index | `rosettastone://rebuild-spotlight` |
-| Clear system cache | `rosettastone://clear-cache` |
-| Install Rosetta 2 | `rosettastone://install-rosetta` |
-
-Actions unavailable on the current CPU (e.g. `install-rosetta` on Intel) are ignored and logged
-rather than raising an error.
-
-Test from Terminal:
-
-```bash
-open "rosettastone://flush-dns"
-```
-
-Full wiring walkthrough: [docs/USER-GUIDE.md](docs/USER-GUIDE.md#5-apple-shortcuts).
+(Historical record: the scheme host survives in `CHANGELOG.md`; grep for `rosettastone` in this
+file is for the removal notice only.)
 
 ---
 
@@ -301,10 +282,10 @@ Full wiring walkthrough: [docs/USER-GUIDE.md](docs/USER-GUIDE.md#5-apple-shortcu
 | Document | Contents |
 |----------|----------|
 | [docs/FEATURES.md](docs/FEATURES.md) | Per-feature spec: command, admin flag, availability matrix, edge cases |
-| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Process model, startup flow, URL-scheme flow, privilege escalation, hardware detection — with Mermaid diagrams |
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Process model, startup flow, privilege escalation, hardware detection — with Mermaid diagrams |
 | [docs/CI-CD.md](docs/CI-CD.md) | Line-by-line explanation of the GitHub Actions workflow |
-| [docs/USER-GUIDE.md](docs/USER-GUIDE.md) | End-user manual, first-run warnings, Shortcuts recipes |
-| [docs/DECISIONS.md](docs/DECISIONS.md) | ADRs: NSStatusItem vs MenuBarExtra, URL Scheme vs App Intents, ad-hoc signing, create-dmg, matrix builds |
+| [docs/USER-GUIDE.md](docs/USER-GUIDE.md) | End-user manual, first-run warnings |
+| [docs/DECISIONS.md](docs/DECISIONS.md) | ADRs: NSStatusItem vs MenuBarExtra, URL scheme removal, ad-hoc signing, create-dmg, matrix builds |
 | [CHANGELOG.md](CHANGELOG.md) | Keep-a-Changelog release history |
 
 ---
@@ -320,10 +301,10 @@ rosetta-stone/
 ├── RosettaStone/          Swift sources
 │   ├── App/               main.swift, RosettaStoneApp, AppDelegate
 │   ├── Models/            FeatureID, AppMode, CommandResult, DeferredChange
-│   ├── Resources/         Assets.xcassets (status-bar glyph), AppIcon.png (master icon)
+│   ├── Resources/         Assets.xcassets (master icon), AppIcon.png (master icon)
 │   ├── Services/          SystemCommands, FeatureCoordinator(+Actions), StartupManager,
-│   │                      SystemStateReader, CPUArchitecture, MacProfile, URLActionRouter,
-│   │                      GatekeeperPolicy, Trace
+│   │                      SystemStateReader, CPUArchitecture, MacProfile, GatekeeperPolicy,
+│   │                      Trace
 │   ├── Support/           Info.plist, RosettaStone.entitlements, AppIcon.appiconset
 │   └── Views/
 │       ├── Main/          ContentView, Components, Theme
