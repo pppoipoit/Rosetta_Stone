@@ -38,6 +38,19 @@ pipeline now exist and both matrix legs build green on GitHub Actions.
 - Refresh-chain losers pruned after owner field sign-off on 14.7.4 and 26.
 - `[RS-BATCH]` trace channel kept alive for the owner's Console filter.
 
+### Phase 11.4.3 — Force UI re-render with .id(UUID()), add debug logs and post-refresh verification
+
+**The UI toggle animation now triggers correctly, and Finder refresh verification ensures hidden files changes are confirmed.**
+
+#### Fixed
+
+- **UI toggle animation not animating.** Added `.id(UUID())` to toggle rows to force re-render when state changes, and explicit `objectWillChange.send()` in `reloadState()` so SwiftUI observes all `@Published` updates.
+- **Finder refresh verification gap.** The Hidden Files write path now reads back `AppleShowAllFiles` after the refresh chain completes, logging the result. If the preference is confirmed but no Finder window is open, the status banner advises: "Finder refresh succeeded. If files still hidden, try opening a new Finder window".
+
+#### Notes
+
+- Owner must have at least one Finder window **OPEN** before testing Hidden Files toggle. If no Finder window is open, the refresh succeeds but you won't see the effect.
+
 ### Phase 11 — UI/UX overhaul + mini app mode
 
 **The menu-bar gadget grew a real interface, and the panel stopped contradicting itself.** Three

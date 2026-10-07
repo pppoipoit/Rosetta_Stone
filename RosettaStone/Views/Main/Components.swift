@@ -1,6 +1,8 @@
 import SwiftUI
 import AppKit
 
+import Foundation  // for Trace
+
 /// The ON/OFF pill switch from the mock-up.
 ///
 /// Built from a `Button` rather than a SwiftUI `Toggle` for two reasons:
@@ -66,6 +68,9 @@ struct PillSwitch: View {
         // the pill animates on exactly the changes that matter and nothing else re-renders
         // it into a spurious tween.
         .animation(palette.animation, value: isOn)
+        .onChange(of: isOn) { oldValue, newValue in
+            Trace.batch("toggle animation triggered from=\(oldValue) to=\(newValue)")
+        }
     }
 }
 
@@ -342,6 +347,7 @@ struct ApplyBar: View {
         .opacity(isDisabled ? 0.45 : 1)
         .padding(.top, 12)
         .animation(Theme.toggle.animation, value: pendingCount)
+        Trace.batch("ApplyBar button state: OK button disabled=\(pendingCount == 0)")
     }
 }
 

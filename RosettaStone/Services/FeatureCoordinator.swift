@@ -191,7 +191,7 @@ final class FeatureCoordinator: ObservableObject {
         Trace.batch("reloadState: gatekeeper disable requires System Settings confirmation ="
                     + " \(SystemCommands.gatekeeperDisableRequiresSystemSettingsConfirmation())")
 
-        publish { coordinator in
+                publish { coordinator in
             coordinator.runAtStartup = startup
             coordinator.gatekeeperBypassed = gatekeeper
             coordinator.hiddenFilesShown = hidden
@@ -200,6 +200,8 @@ final class FeatureCoordinator: ObservableObject {
             coordinator.warning = stale
                 ? "The login item points at an app that has moved. Turn Run at Startup off and on again to repair it."
                 : nil
+            coordinator.objectWillChange.send()
+            Trace.batch("reloadState published new values: gatekeeper=\(gatekeeper.map(String.init) ?? "nil") hidden=\(hidden) startup=\(startup)")
         }
     }
 

@@ -269,6 +269,8 @@ struct ContentView: View {
         let actual = actualValue(for: feature)
         let staged = stagedValue(for: feature, actual: actual)
         let isPending = pendingChanges[feature] != nil
+        
+        Trace.batch("rendering row \(feature) pending=\(String(describing: staged)) actual=\(String(describing: actual))")
 
         return Button {
             // Stages the opposite of what the pill currently shows. Deriving from the
@@ -319,6 +321,7 @@ struct ContentView: View {
         .disabled(isInteractive == false)
         .opacity(availability.isEnabled ? 1 : 0.45)
         .frame(minHeight: Theme.rowSpacing * 1.7)
+        .id(UUID())  // Force re-render on every state change for debugging
     }
 
 /// Feature 5 — the Install button.

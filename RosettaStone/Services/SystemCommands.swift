@@ -568,7 +568,23 @@ enum SystemCommands {
             return .success(output: problem)
         }
         Trace.batch("hiddenFiles: end success refresh=ok")
-        return .success(output: "")
+
+        // Post-refresh verification: read back the key to confirm the value macOS now holds.
+        let postReadBack = (try? SystemCommands.run(finderDefaultsTool,
+                                               ["read", "com.apple.finder", "AppleShowAllFiles"]))
+            .map { $0.standardOutput.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
+            ?? ""
+        let postShown = postReadBack == "1" || postReadBack == "true" || postReadBack == "yes"
+        Trace.batch("post-refresh verification: AppleShowAllFiles=\(postShown)")
+
+        if postShown {
+            // Success case: return a message that suggests opening a new Finder window if needed
+            return .success(output: "Finder refresh succeeded. If files still hidden, try opening a new Finder window")
+        } else {
+            // Verification failed: the preference was written but may not take effect until a new window is opened
+            Trace.batch("hiddenFiles: post-refresh verification FAILED — preference may not be visible until new Finder window opened")
+            return .success(output: "Hidden files preference updated. If files are not visible, try opening a new Finder window")
+        }
     }
 
     /// Path to `defaults`, the one place the Hidden Files write path names it.
