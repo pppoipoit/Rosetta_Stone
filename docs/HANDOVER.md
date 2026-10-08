@@ -61,7 +61,7 @@
 
 ---
 
-## 3. Current Status (Phase 11.4)
+## 3. Current Status (Phase 11.4.4)
 
 ### 3.1 Fully Implemented & Working
 
@@ -73,28 +73,38 @@
 - **Run-at-Startup mode switch** — `AppMode.resolve()` via `--menu-bar-only`; Mode A/B switch at runtime
 - **Diagnostics panel** — hardware, OS, status-item, LaunchAgent status
 - **Status-item toast** — for direct actions in Mode B
+- **TooltipHost bridge fix** (Phase 11.4.4) — `NSHostingView.rootView` is now updated in `updateNSView`, so rows wrapped for AppKit tooltips (Gatekeeper, Auto Boot, mini-panel Gatekeeper) repaint after state changes. The `.id(UUID())` debug workaround is removed.
+- **Hidden Files verification** (Phase 11.4.4) — post-refresh read-back now compares `AppleShowAllFiles` against the requested direction (`shown`), not just truthiness, so hiding files no longer reads as a failure.
+- **Unified logging** (Phase 11.4.4) — `Trace` writes to both `NSLog` and `os_log` with subsystem `com.rosettastone.app` and categories `lifecycle` / `batch`; `[RS-BATCH]` remains in the message text for filtering.
+- **Batch marker exact match** (Phase 11.4.4) — `RS_FAIL:<marker>` now uses exact `==` match, the same rule as `RS_OK:<marker>`, so one row can never be mistaken for another.
 
 ---
 
-### 3.2 Partially Working / Broken (CRITICAL SECTION)
+### 3.2 Resolved Issues (previously the CRITICAL SECTION)
 
-| Area | Symptom | Known Since |
-|------|---------|-------------|
-| UI Toggle Animation | Backend state updates (Published value, pending dot, command built) but the SwiftUI pill does not slide/animate. Shows correct caption but track knob stays in place. | Commits a69ee83, 971df3b — fix attempted with `.id(UUID())` |
-| Finder Refresh | After toggling Hidden Files, AppleScript `update every window` fails with error `-1708` on macOS 14.7.4. 3-step fallback (write prefs→AppleScript→verify) added but verification sometimes fails. | Phase 11.4, commit 971df3b |
-| Missing `[RS-BATCH]` logs | `Trace.batch("[RS-BATCH] …")` calls use `NSLog`, but lines do not appear in Console.app filtered on `[RosettaStone]`. Either swallowed or not flushed. | Ongoing |
-| Gatekeeper 2-step macOS 15+ | After `spctl --master-disable` success, UI shows `.pendingConfirmation` and opens System Settings deep-link. But deep link sometimes doesn't open Security page; user clicks **Anywhere** but state never settles without relaunch. | Phase 11.4 |
+> All four items that were in this section are now resolved as of Phase 11.4.4. The original
+> descriptions are retained in §4 below for historical context.
+
+| Area | Resolution | Phase |
+|------|------------|-------|
+| UI Toggle Animation | `TooltipHost.updateNSView` now sets `hosting.rootView = content`; debug `.id(UUID())` and `objectWillChange.send()` removed. | 11.4.4 |
+| Finder Refresh | Verification now compares read-back against the requested `shown` value via `parseDefaultsBool`. | 11.4.4 |
+| Missing `[RS-BATCH]` logs | `Trace.batch` now writes to `os_log` (subsystem `com.rosettastone.app`, category `batch`) in addition to `NSLog`. | 11.4.4 |
+| Gatekeeper 2-step macOS 15+ | Confirmed working by owner on macOS 15+. | 11.4.4 |
 
 ---
 
 ## 4. Known Issues & Bugs (The "Why" of Current Failures)
 
-| # | Issue | Root Cause (suspected) | Impact | Work-Around / Next Step |
-|---|-------|------------------------|--------|--------------------------|
-| 1 | **UI Toggle Animation not sliding** | Possible `@Binding` mismatch or missing `.id()` identifier on `PillSwitch`. Backend `@Published` value changes, but SwiftUI view does not re-evaluate its animation. | Switch "flips" logically but visual track does not animate. | Inspect `PillSwitch` component. Add explicit `.id(feature.rawValue)` on row view. |
-| 2 | **Finder refresh -1708 error** | AppleScript `update every window` returns error `-1708` ("User canceled") on macOS 14.7.4 when no Finder windows are open or non-interactive context. 3-step fallback may have AppleScript step failing silently. | Hidden Files toggle reports success but Finder windows may not reflect change. | Verify AppleScript only runs when Finder windows exist. Replace with `defaults write` + `killall Finder`. |
-| 3 | **`[RS-BATCH]` traces not in Console.app** | `Trace.batch()` uses `NSLog`. On some macOS versions output may route to `system.log` instead of Console filter, or process lacks entitlement. | Cannot grep `[RS-BATCH]` for batch diagnostics. | Switch to `os_log` (macOS 11+) or file-based logging. Add compile-time flag. |
-| 4 | **Gatekeeper 2-step doesn't auto-complete macOS 15+** | Deep link may not bring Security page to foreground on all macOS 15 builds. If System Settings is hidden, state never settles. | UI stuck in `.pendingConfirmation` indefinitely. | Add `NSWorkspace.open` + bounded re-poll loop. Document: app **cannot** automate "Anywhere" click. |
+All four issues below are **historical** — each was resolved in Phase 11.4.4 and is
+retained only as the original root-cause record. See §3.2 for the resolution summary.
+
+| # | Issue | Root Cause (suspected) | Impact | Work-Around / Next Step | Resolution |
+|---|-------|------------------------|--------|--------------------------|------------|
+| 1 | **UI Toggle Animation not sliding** | Possible `@Binding` mismatch or missing `.id()` identifier on `PillSwitch`. Backend `@Published` value changes, but SwiftUI view does not re-evaluate its animation. | Switch "flips" logically but visual track does not animate. | Inspect `PillSwitch` component. Add explicit `.id(feature.rawValue)` on row view. | **Fixed 11.4.4.** `TooltipHost.updateNSView` now sets `hosting.rootView = content`; `.id(UUID())` and `objectWillChange.send()` removed. |
+| 2 | **Finder refresh -1708 error** | AppleScript `update every window` returns error `-1708` ("User canceled") on macOS 14.7.4 when no Finder windows are open or non-interactive context. 3-step fallback may have AppleScript step failing silently. | Hidden Files toggle reports success but Finder windows may not reflect change. | Verify AppleScript only runs when Finder windows exist. Replace with `defaults write` + `killall Finder`. | **Fixed 11.4.4.** Verification now reads back `AppleShowAllFiles` and compares against the requested value via `parseDefaultsBool`. |
+| 3 | **`[RS-BATCH]` traces not in Console.app** | `Trace.batch()` uses `NSLog`. On some macOS versions output may route to `system.log` instead of Console filter, or process lacks entitlement. | Cannot grep `[RS-BATCH]` for batch diagnostics. | Switch to `os_log` (macOS 11+) or file-based logging. Add compile-time flag. | **Fixed 11.4.4.** `Trace.batch` now writes to `os_log` (subsystem `com.rosettastone.app`) in addition to `NSLog`. |
+| 4 | **Gatekeeper 2-step doesn't auto-complete macOS 15+** | Deep link may not bring Security page to foreground on all macOS 15 builds. If System Settings is hidden, state never settles. | UI stuck in `.pendingConfirmation` indefinitely. | Add `NSWorkspace.open` + bounded re-poll loop. Document: app **cannot** automate "Anywhere" click. | **Confirmed working** by owner on macOS 15+. |
 
 ---
 
@@ -145,6 +155,8 @@
 
 | Hash | Message |
 |------|---------|
+| afd5a70 | fix: Phase 11.4.4 — Live tooltip rows, exact batch parsing, unified logging |
+| daa2550 | docs: add comprehensive HANDOVER.md for AI consultation |
 | a69ee83 | fix: Phase 11.4.3 — force UI re-render with .id(UUID()), add debug logs and post-refresh verification |
 | 971df3b | fix: Phase 11.4 — truth-first state sync, gatekeeper mapping, Finder refresh chain; remove URL-scheme shortcuts and status dot |
 | 7d27ffd | fix: build error — NSAppleScript.executeAndReturnError returns non-optional |

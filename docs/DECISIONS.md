@@ -325,9 +325,11 @@ here — without it, Xcode emits a host-architecture binary mislabelled as Intel
 **Status:** Accepted · **Date:** 2026-09-29
 
 ### Context
-Seven of the eight features require root: `spctl --master-disable`, `nvram AutoBoot=%00`,
+Six of the eight features require root: `spctl --master-disable`, `nvram AutoBoot=%00`,
 `softwareupdate --install-rosetta`, `mdutil -E /`, `dscacheutil -flushcache`,
-`killall -HUP mDNSResponder`, `rm -rf /Library/Caches/*`, and the `launchctl` launch-agent write.
+`killall -HUP mDNSResponder`, and `rm -rf /Library/Caches/*`. Run at Startup writes its
+plist unelevated with `FileManager` into `~/Library/LaunchAgents/`; Hidden Files uses
+`defaults write` (also unelevated).
 The app must work on macOS 10.15, be distributed ad-hoc signed (ADR-003), and never handle a
 password itself.
 

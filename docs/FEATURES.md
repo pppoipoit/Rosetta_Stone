@@ -38,7 +38,7 @@ Notation used throughout this document:
 
 | # | Feature | Writes to | Elevation prompt | Reversible via app? |
 |---|---------|-----------|------------------|--------------------|
-| 1 | Run at Startup | `~/Library/LaunchAgents/` | Yes | Yes — toggle off |
+| 1 | Run at Startup | `~/Library/LaunchAgents/` | No | Yes — toggle off |
 | 2 | Gatekeeper | System policy daemon | Yes | Yes — toggle on |
 | 3 | Hidden Files | `com.apple.finder` prefs | No | Yes — toggle back |
 | 4 | Auto Boot | NVRAM | Yes | Yes — toggle on (Intel only) |

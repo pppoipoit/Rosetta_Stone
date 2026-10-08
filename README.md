@@ -252,7 +252,7 @@ file is for the removal notice only.)
 
 > ⚠️ **Read this before running anything.**
 >
-> Rosetta Stone executes privileged, system-modifying commands. Seven of the eight features
+> Rosetta Stone executes privileged, system-modifying commands. Six of the eight features
 > require administrator rights and will prompt for your password through the standard macOS
 > authentication dialog.
 >
