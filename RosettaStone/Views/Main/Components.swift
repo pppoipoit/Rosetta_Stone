@@ -62,6 +62,12 @@ struct PillSwitch: View {
         .padding(.trailing, isOn ? 5 : 8)
         .frame(width: Metrics.width, height: Metrics.height)
         .background(Capsule().fill(palette.track(isOn: isOn)))
+        // `.clipped()` guarantees the white knob stays inside the Capsule edge. When ON the
+        // offset slides the knob toward the trailing side; without this clip the knob's
+        // shadow can bleed a fraction of a point past the capsule at the extreme of travel.
+        // The shadow radius is only 1 pt and the knob is fully within the track at rest, so
+        // clipping to the frame rectangle does not trim it during normal animation.
+        .clipped()
         // `value:` drives the animation from the *value* rather than a transaction flag, so
         // the pill animates on exactly the changes that matter and nothing else re-renders
         // it into a spurious tween.
