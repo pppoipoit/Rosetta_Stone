@@ -571,7 +571,7 @@ model, form factor, gate result and reason.
 Each panel row ran its command the instant the switch moved. That was correct when the panel was a
 set of independent one-off toggles, but configuring a Mac is rarely one thing:
 
-1. **The password cost was multiplied.** Seven of eight features need root, so switching on
+1. **The password cost was multiplied.** Most system tools need root, so switching on
    Gatekeeper, Hidden Files and Auto Boot in one sitting produced **three** Authorization dialogs.
    The user typed the same password three times, and each prompt stole focus from the panel.
 2. **A half-applied configuration was easy to leave behind.** If the third command failed, the

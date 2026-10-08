@@ -12,6 +12,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 The first working build. Application code, the XcodeGen project specification and the CI
 pipeline now exist and both matrix legs build green on GitHub Actions.
 
+### Phase 11.4.4 — Live tooltip rows, exact batch parsing, unified logging
+
+**This pass replaces the Phase 11.4.3 debug workaround with the actual SwiftUI/AppKit bridge fix and records the command-layer cleanups.**
+
+#### Fixed
+
+- **Gatekeeper row not repainting after state changes.** `TooltipHost` now updates the embedded `NSHostingView.rootView` in `updateNSView`, so rows wrapped for AppKit tooltips (Gatekeeper, Auto Boot, and the mini-panel Gatekeeper row) receive fresh SwiftUI content instead of keeping the first rendered switch value.
+- **Removed the debug-only re-render workaround.** The `.id(UUID())` row reset, render-time trace spam and manual `objectWillChange.send()` from Phase 11.4.3 are gone; `@State` / `@Published` now drive the UI through the normal SwiftUI path.
+- **Hidden Files verification now checks both directions.** The post-refresh read-back compares `AppleShowAllFiles` with the requested value, so hiding files (`NO`/`0`) is no longer logged or surfaced like a failed verification.
+- **Batch marker parsing is exact for failures too.** `RS_FAIL:<marker>` now uses the same exact match rule as `RS_OK:<marker>`, keeping the implementation aligned with the documented “no prefix matching” rule.
+- **Console logging is easier to find.** `Trace` now writes to both `NSLog` and `os_log` with subsystem `com.rosettastone.app` and category `batch` / `lifecycle`; `[RS-BATCH]` remains in the message for text filtering.
+
+#### Documentation
+
+- Updated the current docs to reflect that **Run at Startup no longer requires administrator privileges** and that Hidden Files no longer restarts Finder.
+
 ### Phase 11.4 — Truth-first state sync, Gatekeeper mapping, Finder refresh chain; remove URL-scheme shortcuts and status dot
 
 **The app now reads truth before it writes, the Gatekeeper toggle is locked to one mapping, and Finder refresh survives macOS 14.** The URL-scheme Shortcuts surface and the header status dot are gone by owner decision; hotkeys remain.

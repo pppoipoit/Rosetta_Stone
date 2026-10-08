@@ -22,7 +22,7 @@ Notation used throughout this document:
 
 | # | Feature | UI control | Admin? | Queued? | Intel x64 | Apple Silicon arm64 |
 |---|---------|------------|--------|---------|-----------|---------------------|
-| 1 | Run at Startup | Toggle | **Yes** (admin) | ✅ | ✅ Available | ✅ Available |
+| 1 | Run at Startup | Toggle | No | ✅ | ✅ Available | ✅ Available |
 | 2 | Gatekeeper | Toggle (ON = enforce) | **Yes** (admin) | ✅ | ✅ Available | ✅ Available |
 | 3 | Hidden Files | Toggle (ON = show) | No | ✅ | ✅ Available | ✅ Available |
 | 4 | Auto Boot | Toggle | **Yes** (admin) | ✅ | ✅ Available | ⛔ Greyed + lock icon |
@@ -303,8 +303,8 @@ tell application "Finder" to update (path to home folder)
 Hide hidden files: identical, with `NO` instead of `YES`.
 
 The whole sequence is `SystemCommands.setHiddenFilesShown(_:)`, and it is the **only** write
-path — the panel, the mini panel, the menu item and the URL action all reach it through the
-shared `command(for:pending:)` table, so no route can drift.
+path — the panel, the mini panel and the menu item all reach it through the shared
+`command(for:pending:)` table, so no route can drift.
 
 ### Why Finder is no longer restarted (Phase 11)
 
@@ -469,7 +469,7 @@ carries a reason** — both as the row subtitle and as the hover tooltip.
 > **Queue:** ✅ Yes. The "may take several minutes and needs a network connection" warning is
 > shown at **stage** time — the user learns what they are queuing *before* the password prompt.
 > In a batch this row carries the 900 s timeout, so a slow install is never cut off by the
-> 30 s default. ❌ No (immediate) for the menu-bar item and the URL action.
+> 30 s default. ❌ No (immediate) for the menu-bar item.
 
 ### Purpose
 Install Apple's Rosetta 2 translation environment on Apple Silicon, allowing Intel-only
@@ -722,7 +722,7 @@ flowchart TD
     H --> I[Per-command outcome]
     D -- No --> J[Run unprivileged commands<br/>separately, no prompt]
     J --> I
-    I --> K[killall Finder ONCE<br/>if the hidden-files row succeeded]
+    I --> K[Finder refresh chain<br/>inside hidden-files inline work]
     K --> L[macOS 15+ Gatekeeper follow-up<br/>only if spctl succeeded]
     L --> M[Re-read actual state]
     M --> N{All succeeded?}
@@ -877,6 +877,5 @@ auth prompt**, or **failed with a message**. No action may fail silently.
 
 A **batch** produces one terminal state *per row* rather than one for the batch: a ✅/❌ per
 item, so one failing command never hides the six that worked. See §10.6.
-
 
 

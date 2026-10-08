@@ -394,7 +394,7 @@ enum SystemCommands {
             for command in commands {
                 if line == "\(batchOKPrefix)\(command.marker)" {
                     seen[command.feature] = .success(output: "")
-                } else if line.hasPrefix("\(batchFailPrefix)\(command.marker)") {
+                } else if line == "\(batchFailPrefix)\(command.marker)" {
                     seen[command.feature] = .failure(
                         message: "\(command.feature.title) could not be applied.",
                         exitCode: -1)
@@ -570,21 +570,23 @@ enum SystemCommands {
         Trace.batch("hiddenFiles: end success refresh=ok")
 
         // Post-refresh verification: read back the key to confirm the value macOS now holds.
+        // Both directions matter. The previous diagnostic treated only "shown == true" as
+        // verified, so a successful hide operation was logged as a failure-like state.
         let postReadBack = (try? SystemCommands.run(finderDefaultsTool,
                                                ["read", "com.apple.finder", "AppleShowAllFiles"]))
             .map { $0.standardOutput.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
             ?? ""
-        let postShown = postReadBack == "1" || postReadBack == "true" || postReadBack == "yes"
-        Trace.batch("post-refresh verification: AppleShowAllFiles=\(postShown)")
+        let postShown = parseDefaultsBool(postReadBack)
+        Trace.batch("post-refresh verification: AppleShowAllFiles raw=[\(Trace.escaped(postReadBack))]"
+                    + " parsed=\(postShown.map(String.init) ?? "nil") expected=\(shown)")
 
-        if postShown {
-            // Success case: return a message that suggests opening a new Finder window if needed
-            return .success(output: "Finder refresh succeeded. If files still hidden, try opening a new Finder window")
-        } else {
-            // Verification failed: the preference was written but may not take effect until a new window is opened
-            Trace.batch("hiddenFiles: post-refresh verification FAILED — preference may not be visible until new Finder window opened")
-            return .success(output: "Hidden files preference updated. If files are not visible, try opening a new Finder window")
+        guard postShown == shown else {
+            Trace.batch("hiddenFiles: post-refresh verification FAILED — preference read-back did not match the requested value")
+            return .failure(
+                message: "Hidden Files preference was written, but macOS read-back did not match the requested value.",
+                exitCode: -1)
         }
+        return .success(output: "")
     }
 
     /// Path to `defaults`, the one place the Hidden Files write path names it.
@@ -593,6 +595,13 @@ enum SystemCommands {
     /// `FeatureCoordinator.command(for:pending:)`, so this constant exists to keep a second
     /// spelling of the path from creeping into either of them.
     private static let finderDefaultsTool = "/usr/bin/defaults"
+
+    private static func parseDefaultsBool(_ value: String) -> Bool? {
+        let raw = value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if raw == "1" || raw == "true" || raw == "yes" { return true }
+        if raw == "0" || raw == "false" || raw == "no" { return false }
+        return nil
+    }
 
     // MARK: - Quoting
 

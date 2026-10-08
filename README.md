@@ -40,7 +40,7 @@ Design constraints that shape everything:
 | 1 | Gatekeeper | Toggle | `spctl --master-disable` / `spctl --master-enable` (macOS 15+: confirm “Anywhere” in System Settings) | **Yes** (admin) | ✅ | All |
 | 2 | Auto Boot | Toggle | `nvram AutoBoot=%03` / `nvram AutoBoot=%00` | **Yes** (admin) | ✅ | Intel MacBook only; greyed + lock icon on Apple Silicon *and* on desktops, with the reason shown inline |
 | 3 | Hidden Files | Toggle (ON = show) | `defaults write com.apple.finder AppleShowAllFiles YES/NO`, then an AppleScript `update every window` — **Finder is not restarted** | No | ✅ | All |
-| 4 | Run at Startup | Toggle (mode switch) | `create` / `remove` `~/Library/LaunchAgents/com.rosettastone.helper.plist` | **Yes** (admin) | ✅ | All |
+| 4 | Run at Startup | Toggle (mode switch) | `create` / `remove` `~/Library/LaunchAgents/com.rosettastone.helper.plist` | No | ✅ | All |
 | 5 | Rosetta 2 | Install button | `softwareupdate --install-rosetta --agree-to-license` | **Yes** (admin) | ✅ | Apple Silicon only; greyed on Intel; installed-check via `/usr/libexec/oah/libRosettaRuntime` |
 | 6 | Spotlight Rebuild | Button | `mdutil -E /` | **Yes** (admin) | ✅ | All |
 | 7 | DNS Flush | Button | `dscacheutil -flushcache` + `killall -HUP mDNSResponder` | **Yes** (admin) | ✅ | All |
@@ -107,7 +107,7 @@ Full behavioural detail, per-feature command strings, and edge cases: **[docs/FE
 |------|-------------|
 | Operating system | macOS 10.15 (Catalina) or newer, up to macOS 27 (Golden Gate) |
 | Architectures | Intel x64 and Apple Silicon arm64 (per-arch DMGs published) |
-| Privileges | An administrator account. 7 of 8 features prompt for elevation. |
+| Privileges | An administrator account for the six privileged tools. Run at Startup and Hidden Files do not prompt. |
 | Disk | < 50 MB |
 | Network | Only for the Rosetta 2 install; all other features are fully offline |
 | Runtime dependencies | None. System tools only: `spctl`, `nvram`, `mdutil`, `dscacheutil`, `defaults`, `killall`, `softwareupdate`. Read-only detection additionally uses `uname`, `system_profiler` and `sysctl`. |
@@ -268,7 +268,7 @@ file is for the removal notice only.)
 >   restart to regenerate their caches.
 > - **Auto Boot** (`nvram AutoBoot=%00`) (admin) writes to NVRAM. An invalid or interrupted
 >   write can leave a machine without automatic startup.
-> - **Hidden Files** restarts Finder, which briefly blanks the desktop.
+> - **Hidden Files** writes a Finder preference and asks open Finder windows to refresh. If macOS refuses the refresh permission, open a new Finder window or press ⌘⇧. in Finder.
 > - NVRAM writes and cache deletion are **not reversible** through the app.
 >
 > The software is provided **"as is", without warranty of any kind**. You are solely responsible

@@ -23,8 +23,8 @@ final class FeatureCoordinator: ObservableObject {
     /// Feature 1. ON == the LaunchAgent plist exists.
     @Published private(set) var runAtStartup = false
 
-    /// Feature 2. ON == Gatekeeper is **disabled** (inverted — the switch shows what you
-    /// have actually turned off). `nil` means "could not read", which is not the same as OFF.
+    /// Feature 2's raw system value. `true` means Gatekeeper is bypassed; the row inverts
+    /// this so switch ON means enforcing. `nil` means "could not read", not OFF.
     @Published private(set) var gatekeeperBypassed: Bool?
 
     /// Feature 3. ON == hidden files are **shown** (inverted vs. the system default).
@@ -191,7 +191,7 @@ final class FeatureCoordinator: ObservableObject {
         Trace.batch("reloadState: gatekeeper disable requires System Settings confirmation ="
                     + " \(SystemCommands.gatekeeperDisableRequiresSystemSettingsConfirmation())")
 
-                publish { coordinator in
+        publish { coordinator in
             coordinator.runAtStartup = startup
             coordinator.gatekeeperBypassed = gatekeeper
             coordinator.hiddenFilesShown = hidden
@@ -200,7 +200,6 @@ final class FeatureCoordinator: ObservableObject {
             coordinator.warning = stale
                 ? "The login item points at an app that has moved. Turn Run at Startup off and on again to repair it."
                 : nil
-            coordinator.objectWillChange.send()
             Trace.batch("reloadState published new values: gatekeeper=\(gatekeeper.map(String.init) ?? "nil") hidden=\(hidden) startup=\(startup)")
         }
     }

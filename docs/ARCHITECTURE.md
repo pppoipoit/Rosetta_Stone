@@ -254,7 +254,7 @@ All of it was removed by owner decision. The current truth:
 
 ## 4. Privilege escalation strategy
 
-Seven of eight features require root. Rosetta Stone uses the **only** escalation mechanism
+Six of eight features require root. Rosetta Stone uses the **only** escalation mechanism
 available on macOS 10.15 without a privileged helper binary, a managed deployment profile, or an
 Apple Developer ID installation:
 
@@ -290,7 +290,7 @@ interpolate raw user input, runtime-discovered file names, or URL parameters.
 
 | # | Feature | Elevation | Why |
 |---|---------|-----------|-----|
-| 1 | Run at Startup | **Yes** (admin) | The plist is written by a root shell so the install cannot be blocked by a read-only or sandboxed context; no `launchctl` call is made (§2) |
+| 1 | Run at Startup | No | The plist lives in the user's own `~/Library/LaunchAgents`; it is written with `FileManager`, and no `launchctl` call is made (§2) |
 | 2 | Gatekeeper | **Yes** (admin) | `spctl --master-disable` requires root |
 | 3 | Hidden Files | No | `defaults write com.apple.finder` works as the user. The AppleScript that refreshes open windows is also unprivileged, though macOS may ask once for Automation permission — declining it does not undo the write |
 | 4 | Auto Boot | **Yes** (admin) | `nvram` is root-only |
@@ -692,7 +692,6 @@ Consequences are documented in [DECISIONS.md](DECISIONS.md#adr-003) and
 | Non-zero exit | `spctl` refused by MDM | Show stderr verbatim; re-read state and display reality. |
 | Timeout | Rosetta install stalls | Offer cancel; the `softwareupdate` child is terminated. |
 | State drift | Gatekeeper re-enabled by MDM | Re-read after every write; never trust the exit code alone. |
-
 
 
 

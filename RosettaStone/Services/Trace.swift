@@ -1,14 +1,16 @@
 import Foundation
+#if canImport(os)
+import os
+#endif
 
 /// Lifecycle tracing for every startup and resync step.
 ///
-/// ## Why plain `NSLog`
+/// ## Why both `NSLog` and `os_log`
 ///
-/// `os_log`/`Logger` is macOS 11+, and the deployment floor here is 10.15
-/// (`project.yml`). `NSLog` has existed since 10.0, writes to the same unified log
-/// that `Console.app` reads, and needs no availability guard. The `[RosettaStone]`
-/// prefix is what users are told to filter on — see the Diagnostics section of
-/// `docs/USER-GUIDE.md`.
+/// `Logger` is macOS 11+, and the deployment floor here is 10.15 (`project.yml`).
+/// The older `os_log` API is available on that floor, so traces are written to a real
+/// unified-log subsystem/category while `NSLog` is kept as a compatibility breadcrumb.
+/// Filter Console.app by subsystem `com.rosettastone.app` or by `[RS-BATCH]`.
 ///
 /// ## Why this exists
 ///
@@ -20,9 +22,17 @@ import Foundation
 /// the log alone.
 enum Trace {
 
+#if canImport(os)
+    private static let lifecycleLog = OSLog(subsystem: "com.rosettastone.app", category: "lifecycle")
+    private static let batchLog = OSLog(subsystem: "com.rosettastone.app", category: "batch")
+#endif
+
     /// Every trace line. Deliberately one format string shape so the output is greppable.
     static func log(_ message: String) {
         NSLog("[RosettaStone] %@", message)
+#if canImport(os)
+        os_log("%{public}@", log: lifecycleLog, type: .info, "[RosettaStone] \(message)")
+#endif
     }
 
     // MARK: - Batch diagnostics channel (Phase 11.2)
@@ -43,13 +53,17 @@ enum Trace {
     /// **No behaviour change.** Every call site of this function is a statement in its own
     /// right; nothing reads a value back from it.
     static func batch(_ message: String) {
-        NSLog("%@[RosettaStone] %@", batchPrefix, message)
+        let line = "\(batchPrefix)[RosettaStone] \(message)"
+        NSLog("%@", line)
+#if canImport(os)
+        os_log("%{public}@", log: batchLog, type: .info, line)
+#endif
     }
 
     /// Renders a string with its control characters made visible.
     ///
-    /// This exists because the symptom being diagnosed is partly invisible: `NSLog` and
-    /// Console.app both mangle a bare CR/LF, and a stray `\r` **overwrites the line it was
+    /// This exists because the symptom being diagnosed is partly invisible: logs and
+    /// Console.app can mangle a bare CR/LF, and a stray `\r` **overwrites the line it was
     /// printed on**. A marker line that actually contained `\r` would therefore be
     /// unreproducible from the log — the exact opposite of what this channel is for.
     ///

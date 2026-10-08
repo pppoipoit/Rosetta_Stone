@@ -31,7 +31,7 @@ uploaded, nothing is tracked, and there is no account.
 |------|-------------|
 | macOS | 10.15 Catalina or newer (tested through macOS 27 Golden Gate) |
 | Chip | Intel or Apple Silicon — download the matching DMG |
-| Account | An administrator account (7 of 8 features ask for your password) |
+| Account | An administrator account for the six privileged tools. Run at Startup and Hidden Files do not ask for your password. |
 | Network | Only needed for the Rosetta 2 install |
 
 Check which chip you have:  → **Apple menu → About This Mac**.
@@ -438,7 +438,7 @@ time, so you will never get two password dialogs stacked on top of each other.
 | You cancelled the password prompt | The switch snaps back to where it was. Nothing was changed. No error is shown — cancelling is a normal outcome, not a failure. |
 | The password was wrong three times | macOS locks out further attempts temporarily. Wait a few minutes and try again. |
 | A toggle did not stick | Something else changed the setting — usually a corporate management profile. Rosetta Stone re-reads the real state and shows it to you. |
-| Finder restarted | Expected after toggling Hidden Files. |
+| A Finder window did not update | Hidden Files no longer restarts Finder. Open a new Finder window or press ⌘⇧. in Finder if macOS refused the refresh permission. |
 | Nothing is in the Dock | Expected in power-user mode (Run at Startup ON). Turn it OFF to get the Dock icon back. |
 | There is no menu-bar icon | Expected in the default mode. Turn **Run at Startup** ON (§6.1) to switch to menu-bar mode. |
 | The app does not reappear after reboot | It only does so in power-user mode: turn **Run at Startup** on, then log out and back in. |
@@ -530,7 +530,7 @@ machine.
 | Rosetta 2 install fails | You need an internet connection. On macOS 11.0–11.2 the component is not bundled; update to 11.3+ first. |
 | Auto Boot toggle is greyed | Auto Boot works on **Intel MacBooks only**. Three reasons: (1) Apple Silicon — firmware owns the setting and NVRAM is reset every cold boot; (2) a desktop — there is no lid; (3) the model could not be read, and the app fails safe. The row itself names your reason, and hovering repeats it (§6.4). **Diagnostics…** reports *Auto Boot supported* and *Auto Boot lock reason*. |
 | Gatekeeper toggle keeps flipping back | Your Mac is managed by an organisation profile. That profile wins. |
-| Finder vanished | It restarted after toggling Hidden Files. It comes back on its own within a second. In a batch it restarts **once** for the whole queue (§12). |
+| Finder did not visibly change | Hidden Files writes the preference first, then asks Finder windows to refresh. If macOS blocks that refresh, open a new Finder window or press ⌘⇧. in Finder. |
 | The app icon looks generic | The icon files were not in the build you downloaded. Re-download the DMG (§3.1). |
 
 ---
@@ -655,6 +655,5 @@ press **CANCEL**.
 | [CI-CD.md](CI-CD.md) | How releases are built |
 | [DECISIONS.md](DECISIONS.md) | Why the app is built the way it is |
 | [CHANGELOG.md](../CHANGELOG.md) | What changed in each release |
-
 
 
