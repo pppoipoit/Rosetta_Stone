@@ -185,10 +185,10 @@ struct MacProfile {
         guard !supportsAutoBoot else { return nil }
 
         if formFactor == .desktop {
-            return "Desktop Mac ไม่มีฝาเปิด-ปิด"
+            return "Desktop Macs have no lid to open, so Auto Boot is not applicable."
         }
         if cpuArchitecture == .arm64 {
-            return "Apple Silicon reset NVRAM ทุกครั้งที่ cold boot"
+            return "Apple Silicon firmware controls Auto Boot. NVRAM resets on every cold boot, so this setting cannot be changed."
         }
 
         if formFactor == .unknown {
@@ -458,7 +458,7 @@ func testAutoBootDisabledReason() {
     // reason rather than being told about NVRAM it does share.
     let intelDesktop = MacProfile(formFactor: .desktop, modelName: "iMac",
                                   cpuArchitecture: .x86_64)
-    Check.equal(intelDesktop.autoBootDisabledReason, "Desktop Mac ไม่มีฝาเปิด-ปิด",
+    Check.equal(intelDesktop.autoBootDisabledReason, "Desktop Macs have no lid to open, so Auto Boot is not applicable.",
                 "Intel desktop reports the no-lid reason")
 
     // Apple Silicon laptop: no lid problem, so the reason must be the NVRAM one —
@@ -466,7 +466,7 @@ func testAutoBootDisabledReason() {
     let siliconLaptop = MacProfile(formFactor: .laptop, modelName: "MacBook Pro",
                                    cpuArchitecture: .arm64)
     Check.equal(siliconLaptop.autoBootDisabledReason,
-                "Apple Silicon reset NVRAM ทุกครั้งที่ cold boot",
+                "Apple Silicon firmware controls Auto Boot. NVRAM resets on every cold boot, so this setting cannot be changed.",
                 "Apple Silicon laptop reports the NVRAM reason")
 
     // Unknowns must still explain themselves, in English, since the two Thai

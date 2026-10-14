@@ -292,7 +292,14 @@ final class FeatureCoordinator: ObservableObject {
         case (.clearSystemCache, .action):
             return FeatureCommand(
                 feature: feature,
-                work: .shell("\(Tool.rm) -rf /Library/Caches/*"),
+                // Best-effort: `2>/dev/null || true` keeps the exit status at 0 even when a
+                // SIP-protected top-level cache directory cannot be removed (which happens
+                // on macOS 26). Without it `rm` exits non-zero the moment it hits one, the
+                // batch records RS_FAIL (❌), and the user is told the clear failed even
+                // though every deletable cache was removed. The `*` glob is unchanged and
+                // still does not match dotfiles, by the documented decision in
+                // `docs/FEATURES.md` §8 — only protected entries are skipped, silently.
+                work: .shell("\(Tool.rm) -rf /Library/Caches/* 2>/dev/null || true"),
                 requiresAdmin: true)
 
         default:
@@ -346,7 +353,21 @@ final class FeatureCoordinator: ObservableObject {
             self.publish { $0.isApplyingBatch = true }
 
             let result = SystemCommands.runBatched(commands)
-            let report = BatchReport(items: result.items)
+
+            // --- macOS 15+ Gatekeeper: a disable is a two-step procedure, not a failure ---
+            // On Sequoia (15) and later `spctl --master-disable` exits non-zero by design: it
+            // performs the command-line half of the change, then returns an error telling the
+            // user to confirm "Anywhere" in System Settings. The batch's `RS_FAIL` marker is a
+            // false negative for that one row, so reclassify it to success-with-note (pending
+            // the user's click) rather than ❌. `gatekeeperDisableStaged` folds in the version
+            // gate and the direction, so enabling — one step everywhere — is never touched.
+            let gatekeeperDisableStaged = SystemCommands.gatekeeperDisableRequiresSystemSettingsConfirmation()
+                && commands.contains { command in
+                    command.feature == .gatekeeper
+                        && (command.shell?.contains(SystemCommands.gatekeeperDisableArgument) ?? false)
+                }
+            let report = BatchReport(items: reclassifyGatekeeperPending(result.items,
+                                                                        disableStaged: gatekeeperDisableStaged))
 
             // Post-steps run once for the whole batch, and only for rows that actually
             // succeeded. Nothing sets `batchPostStep` today — it was introduced to hold
@@ -360,21 +381,19 @@ final class FeatureCoordinator: ObservableObject {
                 _ = SystemCommands.runShell(step)
             }
 
-            // The macOS 15+ Gatekeeper follow-up still runs, but **only** if the batch actually
-            // disabled Gatekeeper successfully. Opening System Settings after a failed or
-            // cancelled `spctl` would contradict the message the user is looking at.
-            // (5) Logged at each step: the hook's existence, the three conditions it is gated
-            // on, and whether it actually fired. A silent no-op here is the reason the
-            // System Settings follow-up never appeared.
+            // The macOS 15+ Gatekeeper follow-up. Logged at each step: the hook's existence,
+            // whether a disable was staged, and whether it actually fired. A silent no-op
+            // here is the reason the System Settings follow-up would never appear.
             let gatekeeperOutcome = report.outcome(for: .gatekeeper)
             Trace.batch("applyBatch: gatekeeper follow-up — hook installed=\(self.onGatekeeperNeedsConfirmation != nil)"
+                        + " disableStaged=\(gatekeeperDisableStaged)"
                         + " outcome=\(gatekeeperOutcome.map { $0.isSuccess ? "success" : "not-success" } ?? "absent from batch")")
-            let bypassedNow = SystemStateReader.isGatekeeperBypassed()
-            Trace.batch("applyBatch: gatekeeper follow-up — spctl now bypassed=\(bypassedNow.map(String.init) ?? "nil")"
-                        + " versionGate=\(SystemCommands.gatekeeperDisableRequiresSystemSettingsConfirmation())")
-            if case .success? = gatekeeperOutcome,
-               bypassedNow == true,
-               SystemCommands.gatekeeperDisableRequiresSystemSettingsConfirmation() {
+            // Fire the System Settings follow-up whenever a Gatekeeper **disable** was staged
+            // on macOS 15+ and the row ended in success — which, after the reclassification
+            // above, includes the pending-confirmation case (spctl exited non-zero, the CLI
+            // half is done, the user must still pick "Anywhere"). Enabling never reaches here.
+            if gatekeeperDisableStaged,
+               case .success? = gatekeeperOutcome {
                 Trace.batch("applyBatch: FIRING onGatekeeperNeedsConfirmation")
                 self.publish { $0.onGatekeeperNeedsConfirmation?() }
                 Trace.batch("applyBatch: onGatekeeperNeedsConfirmation dispatched")
@@ -391,12 +410,12 @@ final class FeatureCoordinator: ObservableObject {
                     // Silent revert: the user dismissed the dialog, which is itself the answer.
                     coordinator.statusMessage = nil
                 } else if report.allSucceeded {
-                    // Success-with-note (Phase 11.4): if the ordered Finder refresh chain
-                    // was exhausted, the Hidden Files item carries the Thai+English note as
-                    // its success output. That note is the actionable half of "success", so
-                    // it replaces the generic all-green line; a batch that did not touch
-                    // Hidden Files keeps it unchanged.
-                    let note = report.outcome(for: .hiddenFiles)?.output ?? ""
+                    // Success-with-note: surface the first row that carries one — the Hidden
+                    // Files refresh caveat (Phase 11.4) or the macOS 15+ Gatekeeper pending
+                    // confirmation. That note is the actionable half of "success", so it
+                    // replaces the generic all-green line; a batch with no note keeps the
+                    // generic line.
+                    let note = report.items.first { $0.outcome.output.isEmpty == false }?.outcome.output ?? ""
                     coordinator.statusMessage = StatusMessage(
                         text: note.isEmpty
                             ? "สำเร็จทั้งหมด · \(report.items.count) change(s) applied."
@@ -414,6 +433,47 @@ final class FeatureCoordinator: ObservableObject {
             self.reloadState()
 
             DispatchQueue.main.async { completion(report) }
+        }
+    }
+
+    /// Reclassifies a Gatekeeper **disable** that the batch recorded as `RS_FAIL` into a
+    /// success-with-note, because on macOS 15+ `spctl --master-disable` exits non-zero by
+    /// design: it performs the command-line half of the change, then returns an error
+    /// telling the user to confirm "Anywhere" in System Settings. That error is the
+    /// two-step flow, not a failure, so the row must read "pending your confirmation",
+    /// never ❌.
+    ///
+    /// Only a `spctl` `RS_FAIL` is reclassified (recognised by the shared batch failure
+    /// message). A whole elevated-shell failure carries a different message and is left as
+    /// a real failure. A cancelled dialog is never reclassified. Enabling is one step on
+    /// every version and is never touched (`disableStaged` is false for it).
+    private func reclassifyGatekeeperPending(_ items: [BatchItemResult],
+                                             disableStaged: Bool) -> [BatchItemResult] {
+        guard disableStaged else { return items }
+        let spctlFailMessage = SystemCommands.batchFailureMessage(for: .gatekeeper)
+        let alreadyBypassed = SystemStateReader.isGatekeeperBypassed() ?? false
+
+        return items.map { item in
+            guard item.feature == .gatekeeper else { return item }
+            switch item.outcome {
+            case .cancelled:
+                // The user dismissed the dialog — that is its own answer, never "pending".
+                return item
+            case .failure(let message, _) where message == spctlFailMessage:
+                // `spctl` ran and exited non-zero — the macOS 15+ two-step signal.
+                return BatchItemResult(feature: .gatekeeper,
+                                       outcome: .success(output: GatekeeperPolicy.batchPendingNote))
+            case .failure:
+                // A different failure (e.g. the elevated shell itself failed): leave it.
+                return item
+            case .success where alreadyBypassed:
+                // Genuinely bypassed already: plain success, no note needed.
+                return item
+            case .success:
+                // Command exited 0 but the state has not flipped yet: pending confirmation.
+                return BatchItemResult(feature: .gatekeeper,
+                                       outcome: .success(output: GatekeeperPolicy.batchPendingNote))
+            }
         }
     }
 

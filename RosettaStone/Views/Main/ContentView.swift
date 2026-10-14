@@ -710,7 +710,13 @@ struct BatchReportSheet: View {
             VStack(spacing: 0) {
                 ForEach(Array(report.items.enumerated()), id: \.offset) { index, item in
                     HStack(spacing: 10) {
-                        Text(item.succeeded ? "✅" : "❌")
+                        // A row that succeeded but carries a note (the macOS 15+ Gatekeeper
+                        // pending confirmation) reads ⚠️, not ✅: the command's half is done
+                        // but the user still has a step. A plain success reads ✅; anything
+                        // else is a real failure and reads ❌.
+                        Text(item.succeeded
+                             ? (item.outcome.output.isEmpty ? "✅" : "⚠️")
+                             : "❌")
                             .font(.system(size: 13))
                             .frame(width: 20, alignment: .center)
                         VStack(alignment: .leading, spacing: 1) {
@@ -719,6 +725,11 @@ struct BatchReportSheet: View {
                                 .foregroundColor(Theme.primaryText)
                             if let message = item.outcome.failureMessage {
                                 Text(message)
+                                    .font(.system(size: 11))
+                                    .foregroundColor(Theme.secondaryText)
+                            } else if item.outcome.output.isEmpty == false {
+                                // The success-with-note text (e.g. the Gatekeeper pending step).
+                                Text(item.outcome.output)
                                     .font(.system(size: 11))
                                     .foregroundColor(Theme.secondaryText)
                             }

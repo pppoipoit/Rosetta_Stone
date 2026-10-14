@@ -228,10 +228,10 @@ struct MacProfile {
         guard !supportsAutoBoot else { return nil }
 
         if formFactor == .desktop {
-            return "Desktop Mac ไม่มีฝาเปิด-ปิด"
+            return "Desktop Macs have no lid to open, so Auto Boot is not applicable."
         }
         if cpuArchitecture == .arm64 {
-            return "Apple Silicon reset NVRAM ทุกครั้งที่ cold boot"
+            return "Apple Silicon firmware controls Auto Boot. NVRAM resets on every cold boot, so this setting cannot be changed."
         }
 
         if formFactor == .unknown {

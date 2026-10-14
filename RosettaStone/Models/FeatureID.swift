@@ -79,7 +79,8 @@ extension FeatureID {
     static let clearSystemCacheWarning =
         "⚠️ การล้าง System Cache อาจทำให้บางแอปช้าลงชั่วคราว\n"
         + "Everything inside /Library/Caches will be deleted. Open applications may misbehave "
-        + "and need to be restarted, and there is no way to undo this."
+        + "and need to be restarted, and there is no way to undo this. Some system-protected "
+        + "caches cannot be deleted and will be left in place."
 
     /// One-line explanation shown under the row title.
     ///

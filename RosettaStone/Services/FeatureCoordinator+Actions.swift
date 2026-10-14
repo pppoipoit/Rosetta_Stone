@@ -358,6 +358,7 @@ extension FeatureCoordinator {
     func clearSystemCache() {
         runImmediately(.clearSystemCache,
                        pending: .action,
-                       successMessage: "The system cache has been cleared. Caches rebuild as apps need them.")
+                       successMessage: "The system cache has been cleared. Caches rebuild as apps need them. "
+                           + "Some system-protected caches cannot be deleted and were left in place.")
     }
 }

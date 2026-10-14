@@ -62,6 +62,15 @@ enum SystemCommands {
     /// writers never share a code path.)
     static let spctlTool = "/usr/sbin/spctl"
 
+    /// The **enable** (enforce) flag. Isolated so the command builder and the batch
+    /// reclassification agree on the exact spelling of each direction — a second literal
+    /// would let the two drift.
+    static let gatekeeperEnableArgument = "--master-enable"
+
+    /// The **disable** (bypass) flag — the direction that needs the macOS 15+ System
+    /// Settings confirmation. See `gatekeeperShell(enabling:)`.
+    static let gatekeeperDisableArgument = "--master-disable"
+
     /// The pending→command table for the Gatekeeper row — the **one** mapping, owner
     /// verified in Phase 11.4:
     ///
@@ -76,7 +85,7 @@ enum SystemCommands {
     /// into inverting each other, and the off-Mac harness copies it verbatim to assert the
     /// table (`tests/MacProfileTests.swift`). Never invert this at a call site.
     static func gatekeeperShell(enabling: Bool) -> String {
-        "\(spctlTool) --master-\(enabling ? "enable" : "disable")"
+        "\(spctlTool) \(enabling ? gatekeeperEnableArgument : gatekeeperDisableArgument)"
     }
 
     // MARK: - Unprivileged execution
@@ -372,6 +381,15 @@ enum SystemCommands {
         return lines.joined(separator: " ; ")
     }
 
+    /// The per-command message a batch emits when a command's marker is `RS_FAIL`. Shared
+    /// so the macOS 15+ Gatekeeper reclassification in `FeatureCoordinator.applyBatch` can
+    /// tell "`spctl` ran and exited non-zero" (this message, the two-step signal) apart
+    /// from a whole elevated-shell failure (a different message) and reclassify only the
+    /// former as pending.
+    static func batchFailureMessage(for feature: FeatureID) -> String {
+        "\(feature.title) could not be applied."
+    }
+
     /// Maps a batch script's stdout back onto per-command outcomes.
     ///
     /// A command with **no** marker is treated as a failure, never a success: silence is not
@@ -396,7 +414,7 @@ enum SystemCommands {
                     seen[command.feature] = .success(output: "")
                 } else if line == "\(batchFailPrefix)\(command.marker)" {
                     seen[command.feature] = .failure(
-                        message: "\(command.feature.title) could not be applied.",
+                        message: batchFailureMessage(for: command.feature),
                         exitCode: -1)
                 }
             }

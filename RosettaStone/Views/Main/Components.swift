@@ -35,19 +35,35 @@ struct PillSwitch: View {
 
     let isOn: Bool
 
-    /// How far the knob travels between the two ends: the track, minus the knob and the
-    /// 5 pt of padding each end carries.
+    /// How far the knob's **centre** travels between the two ends. The knob is centred in
+    /// the 54 pt track and shifted by half this distance each way, so:
+    ///   OFF → centre at 5 (padding) + 7 (half knob) = 12 pt,
+    ///   ON  → centre at 54 − 5 (padding) − 7 (half knob) = 42 pt.
+    /// That is 54 − 14 (knob) − 10 (5 pt padding each end) = 30 pt of travel, and the
+    /// knob's edges (5…19 when OFF, 35…49 when ON) always sit inside the 54 pt capsule.
     private var knobTravel: CGFloat {
         Metrics.width - Metrics.knobDiameter - 10
     }
 
+    /// How far the caption shifts to the side **opposite** the knob, so the label and the
+    /// knob never overlap at either end of travel. Equal to the knob's half-travel.
+    private var captionShift: CGFloat { knobTravel / 2 }
+
     private var palette: PillSwitchPalette { Theme.toggle }
 
     var body: some View {
-        HStack(spacing: 4) {
+        // A ZStack rather than an HStack: the knob and the caption are positioned
+        // independently inside the track, so the knob's centre lands exactly on 12 pt (OFF)
+        // and 42 pt (ON) regardless of the caption's width. In the old HStack the caption
+        // pushed the knob along, and a 30 pt offset on top of that carried the 14 pt knob
+        // past the 54 pt capsule — the knob visibly jumped outside the pill when ON.
+        ZStack {
+            // The caption rides on the side the knob is *not* on: OFF → "OFF" on the right,
+            // ON → "ON" on the left. Its colour is fixed white because it sits on the track.
             Text(isOn ? "ON" : "OFF")
                 .font(.system(size: 10, weight: .semibold, design: .rounded))
                 .foregroundColor(palette.caption(isOn: isOn))
+                .offset(x: isOn ? -captionShift : captionShift)
 
             // The knob. A single element whose position is the animation, rather than an
             // `if isOn { } else { }` pair — swapping two views cannot animate between them.
@@ -55,18 +71,15 @@ struct PillSwitch: View {
                 .fill(palette.knob)
                 .frame(width: Metrics.knobDiameter, height: Metrics.knobDiameter)
                 .shadow(color: Color.black.opacity(0.25), radius: 1, y: 0.5)
-                // ON pushes the knob right; OFF leaves it at the leading edge.
-                .offset(x: isOn ? knobTravel : 0)
+                // ON pushes the knob right, OFF left, by half the travel about the centre.
+                .offset(x: isOn ? knobTravel / 2 : -knobTravel / 2)
         }
-        .padding(.leading, isOn ? 8 : 5)
-        .padding(.trailing, isOn ? 5 : 8)
         .frame(width: Metrics.width, height: Metrics.height)
         .background(Capsule().fill(palette.track(isOn: isOn)))
-        // `.clipped()` guarantees the white knob stays inside the Capsule edge. When ON the
-        // offset slides the knob toward the trailing side; without this clip the knob's
-        // shadow can bleed a fraction of a point past the capsule at the extreme of travel.
-        // The shadow radius is only 1 pt and the knob is fully within the track at rest, so
-        // clipping to the frame rectangle does not trim it during normal animation.
+        // `.clipped()` guarantees the knob and its shadow stay inside the Capsule at the
+        // extreme of travel. With the centre-based geometry above the knob is fully within
+        // the track at rest; the clip is the belt-and-braces that stops any shadow bleed
+        // past the rounded edge during the slide.
         .clipped()
         // `value:` drives the animation from the *value* rather than a transaction flag, so
         // the pill animates on exactly the changes that matter and nothing else re-renders

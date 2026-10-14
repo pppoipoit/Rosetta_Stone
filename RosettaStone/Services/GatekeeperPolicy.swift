@@ -151,6 +151,16 @@ enum GatekeeperPolicy {
     static let confirmedMessage =
         "Gatekeeper is now bypassed. Re-enable it when you no longer need it."
 
+    /// The success-with-note the batch report carries for a Gatekeeper **disable** on
+    /// macOS 15+. Distinct from `pendingMessage` (the persistent footer/toast) and from
+    /// `confirmationMessage` (the one-shot System Settings alert): this is the one-line
+    /// per-row note in the batch results dialog, and it must not claim the change is
+    /// finished — the user still has to pick "Anywhere". Used by
+    /// `FeatureCoordinator.applyBatch` to reclassify the two-step disable as
+    /// success-with-note rather than a failure.
+    static let batchPendingNote =
+        "Gatekeeper disabled. Please choose 'Anywhere' in System Settings to complete."
+
     /// The grey "unknown" tooltip on the Gatekeeper row (Phase 11.4).
     ///
     /// Shown when `spctl --status` could not be parsed — before Phase 11.4 the same fact
