@@ -12,6 +12,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 The first working build. Application code, the XcodeGen project specification and the CI
 pipeline now exist and both matrix legs build green on GitHub Actions.
 
+### Phase 11.4.5 Hotfix — macOS 10.15 Compatibility
+
+**Fixed**
+- **Hidden Files verification:** `parseDefaultsBool` now correctly treats empty `defaults read` output as `false` (hidden), preventing false failures when hiding files.
+- **Batch marker parsing:** Reverted failure marker check to `hasPrefix` to ensure resilience against trailing whitespace or shell artifacts on older macOS versions.
+- **UI Toggle rendering:** Added `.mask(Capsule())` to `PillSwitch` to prevent visual overflow or square rendering bugs on macOS 10.15.
+
 ### Phase 11.4.4 — Live tooltip rows, exact batch parsing, unified logging
 
 **This pass replaces the Phase 11.4.3 debug workaround with the actual SwiftUI/AppKit bridge fix and records the command-layer cleanups.**

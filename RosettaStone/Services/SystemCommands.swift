@@ -616,7 +616,7 @@ enum SystemCommands {
 
     private static func parseDefaultsBool(_ value: String) -> Bool? {
         let raw = value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        if raw.isEmpty { return false } // Default macOS state is hidden
+        if raw.isEmpty { return false } // CRITICAL: Default macOS state is hidden
         if raw == "1" || raw == "true" || raw == "yes" { return true }
         if raw == "0" || raw == "false" || raw == "no" { return false }
         return nil
