@@ -21,7 +21,7 @@ pipeline now exist and both matrix legs build green on GitHub Actions.
 - **Gatekeeper row not repainting after state changes.** `TooltipHost` now updates the embedded `NSHostingView.rootView` in `updateNSView`, so rows wrapped for AppKit tooltips (Gatekeeper, Auto Boot, and the mini-panel Gatekeeper row) receive fresh SwiftUI content instead of keeping the first rendered switch value.
 - **Removed the debug-only re-render workaround.** The `.id(UUID())` row reset, render-time trace spam and manual `objectWillChange.send()` from Phase 11.4.3 are gone; `@State` / `@Published` now drive the UI through the normal SwiftUI path.
 - **Hidden Files verification now checks both directions.** The post-refresh read-back compares `AppleShowAllFiles` with the requested value, so hiding files (`NO`/`0`) is no longer logged or surfaced like a failed verification.
-- **Batch marker parsing is exact for failures too.** `RS_FAIL:<marker>` now uses the same exact match rule as `RS_OK:<marker>`, keeping the implementation aligned with the documented “no prefix matching” rule.
+- **Batch marker parsing hardened for macOS 10.15.** `RS_OK:<marker>` lines keep an exact `==` match, while `RS_FAIL:<marker>` lines use `hasPrefix` so unexpected trailing whitespace or shell artifacts cannot hide a real failure on older OS versions.
 - **Console logging is easier to find.** `Trace` now writes to both `NSLog` and `os_log` with subsystem `com.rosettastone.app` and category `batch` / `lifecycle`; `[RS-BATCH]` remains in the message for text filtering.
 
 #### Documentation

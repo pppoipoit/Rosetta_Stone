@@ -412,7 +412,7 @@ enum SystemCommands {
             for command in commands {
                 if line == "\(batchOKPrefix)\(command.marker)" {
                     seen[command.feature] = .success(output: "")
-                } else if line == "\(batchFailPrefix)\(command.marker)" {
+                } else if line.hasPrefix("\(batchFailPrefix)\(command.marker)") {
                     seen[command.feature] = .failure(
                         message: batchFailureMessage(for: command.feature),
                         exitCode: -1)
@@ -616,6 +616,7 @@ enum SystemCommands {
 
     private static func parseDefaultsBool(_ value: String) -> Bool? {
         let raw = value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if raw.isEmpty { return false } // Default macOS state is hidden
         if raw == "1" || raw == "true" || raw == "yes" { return true }
         if raw == "0" || raw == "false" || raw == "no" { return false }
         return nil

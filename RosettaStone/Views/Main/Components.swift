@@ -76,11 +76,11 @@ struct PillSwitch: View {
         }
         .frame(width: Metrics.width, height: Metrics.height)
         .background(Capsule().fill(palette.track(isOn: isOn)))
-        // `.clipped()` guarantees the knob and its shadow stay inside the Capsule at the
-        // extreme of travel. With the centre-based geometry above the knob is fully within
-        // the track at rest; the clip is the belt-and-braces that stops any shadow bleed
-        // past the rounded edge during the slide.
-        .clipped()
+        // On macOS 10.15, `.clipped()` on a `.background(Capsule())` renders the track
+        // background as a rectangle. `.mask(Capsule())` pins the clipping to a true Capsule,
+        // preserving the rounded pill shape while confining the knob and its shadow to the
+        // track.
+        .mask(Capsule())
         // `value:` drives the animation from the *value* rather than a transaction flag, so
         // the pill animates on exactly the changes that matter and nothing else re-renders
         // it into a spurious tween.
