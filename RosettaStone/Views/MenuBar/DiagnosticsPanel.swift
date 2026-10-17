@@ -120,6 +120,7 @@ enum DiagnosticsPanel {
         alert.messageText = "Rosetta Stone — Diagnostics"
         alert.informativeText = "Copy this into a bug report if something is not behaving."
         alert.addButton(withTitle: "Copy Report")
+        alert.addButton(withTitle: "Copy Runtime Logs")
         alert.addButton(withTitle: "Close")
 
         // A selectable text view: screenshots lose text, pasted text does not.
@@ -142,9 +143,37 @@ enum DiagnosticsPanel {
         // own a modal window, or the alert can open behind whatever the user was using.
         NSApp.activate(ignoringOtherApps: true)
 
-        guard alert.runModal() == .alertFirstButtonReturn else { return }
-        let pasteboard = NSPasteboard.general
-        pasteboard.clearContents()
-        pasteboard.setString(text, forType: .string)
+        // The panel stays open between actions so the owner can copy the report
+        // *and* the runtime log from a single session, then dismiss.
+        while true {
+            let response = alert.runModal()
+
+            if response == .alertFirstButtonReturn {
+                // Copy Report
+                let pasteboard = NSPasteboard.general
+                pasteboard.clearContents()
+                pasteboard.setString(text, forType: .string)
+
+            } else if response == .alertSecondButtonReturn {
+                // Copy Runtime Logs — the trace.log file written by Trace.writeToFile.
+                let logContent = Trace.readLogFile() ?? "No logs found yet."
+                let pasteboard = NSPasteboard.general
+                pasteboard.clearContents()
+                pasteboard.setString(logContent, forType: .string)
+
+                // Immediate feedback: the button title flips to "Copied!" and reverts
+                // after 2 seconds. The alert is re-presented so the owner sees the
+                // transient state.
+                alert.buttons[1].title = "Copied!"
+                DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
+                    alert.buttons[1].title = "Copy Runtime Logs"
+                }
+                continue
+
+            } else {
+                // Close (or window close gesture)
+                return
+            }
+        }
     }
 }

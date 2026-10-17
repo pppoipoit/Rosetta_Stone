@@ -27,12 +27,83 @@ enum Trace {
     private static let batchLog = OSLog(subsystem: "com.rosettastone.app", category: "batch")
 #endif
 
+    // MARK: - File logging (runtime log extraction)
+
+    /// Serial queue for all file writes — prevents interleaved writes from concurrent
+    /// `Trace.log` / `Trace.batch` calls on different threads.
+    private static let logQueue = DispatchQueue(label: "com.rosettastone.filelog")
+
+    /// The directory `~/Library/Logs/com.rosettastone.app/` where the trace log lives.
+    private static let logsDirectoryURL: URL =
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Logs/com.rosettastone.app")
+
+    /// The trace log file URL: `~/Library/Logs/com.rosettastone.app/trace.log`.
+    private static let traceLogURL: URL =
+        logsDirectoryURL.appendingPathComponent("trace.log")
+
+    /// Maximum number of lines retained in the log file to prevent unbounded growth.
+    private static let maxLogLines = 500
+
+    /// Writes a timestamped line to the trace log file on `logQueue`, rolling the file
+    /// to the last `maxLogLines` lines. Creates the log directory if it does not yet
+    /// exist. Runs asynchronously so logging never blocks the caller — this is purely
+    /// an additional channel alongside `NSLog` / `os_log`, which still go to Console.app.
+    private static func writeToFile(_ message: String) {
+        logQueue.async {
+            let formatter = DateFormatter()
+            formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
+            let timestamp = formatter.string(from: Date())
+
+            let newLine = "[\(timestamp)] \(message)"
+
+            do {
+                // Ensure the directory exists (no-op if already present).
+                try FileManager.default.createDirectory(
+                    at: logsDirectoryURL,
+                    withIntermediateDirectories: true,
+                    attributes: nil)
+
+                // Read existing content, if any.
+                var lines: [String] = []
+                if FileManager.default.fileExists(atPath: traceLogURL.path),
+                   let existing = try? String(contentsOf: traceLogURL, encoding: .utf8) {
+                    lines = existing
+                        .components(separatedBy: .newlines)
+                        .filter { !$0.isEmpty }
+                }
+
+                lines.append(newLine)
+
+                // Keep only the last maxLogLines to prevent unbounded growth.
+                if lines.count > maxLogLines {
+                    lines = Array(lines.suffix(maxLogLines))
+                }
+
+                try lines.joined(separator: "\n").write(
+                    to: traceLogURL,
+                    atomically: true,
+                    encoding: .utf8)
+            } catch {
+                // File logging must never crash the app — silently skip on error.
+            }
+        }
+    }
+
+    /// Reads the full contents of the trace log file. Returns `nil` when the file
+    /// does not yet exist (no trace has been written).
+    static func readLogFile() -> String? {
+        guard FileManager.default.fileExists(atPath: traceLogURL.path) else { return nil }
+        return try? String(contentsOf: traceLogURL, encoding: .utf8)
+    }
+
     /// Every trace line. Deliberately one format string shape so the output is greppable.
     static func log(_ message: String) {
         NSLog("[RosettaStone] %@", message)
 #if canImport(os)
         os_log("%{public}@", log: lifecycleLog, type: .info, "[RosettaStone] \(message)")
 #endif
+        writeToFile("[RosettaStone] \(message)")
     }
 
     // MARK: - Batch diagnostics channel (Phase 11.2)
@@ -58,6 +129,7 @@ enum Trace {
 #if canImport(os)
         os_log("%{public}@", log: batchLog, type: .info, line)
 #endif
+        writeToFile(line)
     }
 
     /// Renders a string with its control characters made visible.
